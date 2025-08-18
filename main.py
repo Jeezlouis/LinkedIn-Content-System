@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel
 from firecrawl import FirecrawlApp, ScrapeOptions
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer
@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     messages: List[BaseMessage]
     raw_content: List[dict]
     extracted_articles: List[dict]
+    analyzed_articles: List[dict]
 
 
 
@@ -94,7 +95,7 @@ except Exception as e:
 
 def scrape_content(state: AgentState) -> AgentState:
     """Node 1: Scrape content from the web"""
-    url = "https://www.wired.com/"
+    url = "https://tldr.tech/"
     
     try:
         raw_content = extract_tech_news.invoke({"url": url})
@@ -138,8 +139,8 @@ def extract_structured_news(state: AgentState) -> AgentState:
     # Create the extraction prompt
     system_prompt = news_extractor(
         scraped_content=scraped_content,
-        source_url="https://www.wired.com/", 
-        timestamp=datetime.now(datetime.UTC)
+        source_url="https://tldr.tech/", 
+        timestamp=datetime.now(timezone.utc).isoformat()
     )
     
     # Create messages for the LLM
@@ -192,7 +193,7 @@ def extract_structured_news(state: AgentState) -> AgentState:
                 "summary": response.content[:200] + "...",
                 "publication_date": datetime.now(datetime.UTC).isoformat(),
                 "author": "Unknown",
-                "article_url": "https://www.wired.com/",
+                "article_url": "https://tldr.tech/",
                 "main_topic": "Technology",
                 "technologies": [],
                 "content": response.content[:500]
@@ -212,6 +213,130 @@ def extract_structured_news(state: AgentState) -> AgentState:
                 SystemMessage(content=f"Error in news extraction: {str(e)}")
             ]
         }
+    
+def analyze_relevance(state: AgentState) -> AgentState:
+    """"Node 3: This node analyze the relavance of each article"""
+    extracted_article =  state.get("extracted_articles", [])
+    updated_article= []
+
+    if not extracted_article:
+        return {
+            "analyzed_articles": [],
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No extracted articles to analyze")
+            ]
+        }
+
+    for article in extracted_article:
+        system_prompt = news_relevance_score(
+            article=article,
+            user_expertise=["software development", "Ai/Ml", "Python development", "Ai agent", "Javascript/React", "Next js", "Web development", "Saas Apps"],
+            target_audience=["Junior/Mid-level developers", "Startup Founders", "Freelance developers", "Tech leads"]
+        )
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="Please analyze the relevance of each article based on the user expertise and target audience.")
+        ]
+
+        try:
+            response = llm.invoke(messages)
+
+            article_copy = article.copy()
+            article_copy["relevance_analysis"] = response.content
+            updated_article.append(article_copy)
+
+        except Exception as e:
+            print(f"Skipping article due to error {e}")
+            continue
+
+    return {
+        "analyzed_articles": updated_article,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully analyzed {len(updated_article)} articles")
+        ]
+    }
+
+def categorize_articles(state: AgentState) -> AgentState:
+    """Node 4: Categorize each article based on it's content"""
+    articles = state.get("analyzed_articles", [])
+    updated_article = []
+    if not articles:
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No articles to categorize")
+            ]
+        }
+
+    for article in articles:
+        system_prompt = article_categorizer(
+            title=article["title"],
+            content=article["content"],
+            source=article["article_url"]
+        )
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="Please categorize the article based on it's content.")
+        ]
+
+        try:
+            response = llm.invoke(messages)
+
+            article_copy = article.copy()
+            article_copy["category"] = response.content
+            updated_article.append(article_copy)
+
+        except Exception as e:
+            print(f"Skipping article due to error {e}")
+            continue
+    return {
+        "analyzed_articles": updated_article,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully categorized {len(updated_article)} articles")
+        ]
+    }
+
+def summarize_content(state: AgentState) -> AgentState:
+    """Node 5: Sumazize the content of each article"""
+    articles = state.get("analyzed_articles", [])
+    updated_article = []
+    if not articles:
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No articles to summarize")
+            ]
+        }
+
+    for article in articles:
+        system_prompt = news_summarizer(
+            article=article,
+            source=article["article_url"],
+        )
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="Summarize the article based on it's content")
+        ]
+
+        try:
+            response = llm.invoke(messages)
+
+            article_copy = article.copy()
+            article_copy["summary"] = response.content
+            updated_article.append(article_copy)
+        except Exception as e:
+            print(f"Skipping article due to error {e}")
+            continue
+    
+    
+    return {
+        "analyzed_articles": updated_article,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully summarized {len(updated_article)} articles")
+        ]
+    }
+
         
 # Build the graph
 graph = StateGraph(AgentState)
@@ -219,37 +344,46 @@ graph = StateGraph(AgentState)
 # Add nodes
 graph.add_node("scraper", scrape_content)
 graph.add_node("extractor", extract_structured_news)
+graph.add_node("relevance_analyst", analyze_relevance)
+graph.add_node("categorizer", categorize_articles)
+graph.add_node("summarizer", summarize_content)
 
 # Define the flow
 graph.add_edge(START, "scraper")
 graph.add_edge("scraper", "extractor") 
-graph.add_edge("extractor", END)
+graph.add_edge("extractor", "relevance_analyst")
+graph.add_edge("relevance_analyst", "categorizer")
+graph.add_edge("categorizer", "summarizer")
+graph.add_edge("summarizer", END)
 
 # Compile the graph
 app = graph.compile()
 
 # Test function
-def run_news_extraction():
-    """Run the complete news extraction pipeline"""
+def run_news_analysis():
+    """Run the complete news analysis pipeline"""
     initial_state = {
         "messages": [],
         "raw_content": [],
-        "extracted_articles": []
+        "extracted_articles": [],
+        "analyzed_articles": [],
     }
     
     result = app.invoke(initial_state)
     
-    print("=== EXTRACTION RESULTS ===")
+    print("=== Analysis RESULTS ===")
     print(f"Messages: {len(result['messages'])}")
-    print(f"Extracted Articles: {len(result.get('extracted_articles', []))}")
+    print(f"analyzed Articles: {len(result.get('analyzed_articles', []))}")
     
-    for i, article in enumerate(result.get('extracted_articles', []), 1):
+    for i, article in enumerate(result.get('analyzed_articles', []), 1):
         print(f"\n--- Article {i} ---")
         print(f"Title: {article.get('title', 'N/A')}")
         print(f"Summary: {article.get('summary', 'N/A')}")
-        print(f"Technologies: {article.get('technologies', [])}")
+        print(f"Relevance analysis: {article.get('relevance_analysis', [])}")
+        print(f"Categories: {article.get('category', [])}")
+        print(f"Article url: {article.get('article_url', [])}")
     
     return result
 
 if __name__ == "__main__":
-    run_news_extraction()
+    run_news_analysis()
