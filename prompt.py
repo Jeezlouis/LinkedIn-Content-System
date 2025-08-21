@@ -256,10 +256,30 @@ For each distinct news article found, provide:
 - Title: [Clean article headline]
 - Summary: [2-3 sentence summary of the main points]  
 - Publication Date: [When was this published - extract from content]
-- Author: [Article author if available]
+- Author: [Article author if available. If NO author found, use the website name from the source_url. For example: if source is "https://techcrunch.com", use "TechCrunch" as author]
 - Article URL: [Direct link to full article if found]
+- Image URL: [The image link linked to the article if available, must be a complete URL starting with http/https]
+- Source: [Extract the website/publication name from the content or use domain name from source_url]
 - Main Topic: [Primary subject matter]
 - Key Technologies Mentioned: [Specific tools, languages, frameworks, companies]
+
+AUTHOR RULES:
+- If article has author byline (e.g., "By John Smith", "Written by Jane Doe"), use that
+- If NO author found, extract website name from source_url and use as author
+- Examples: 
+  * https://techcrunch.com → "TechCrunch"
+  * https://tldr.tech → "TLDR"
+  * https://hacker-news.com → "Hacker News"
+
+SOURCE RULES:
+- Extract publication name from content if possible
+- If not found, use domain name from source_url
+- Make it human-readable (e.g., "TechCrunch", not "techcrunch.com")
+
+IMAGE URL RULES:
+- Only include valid image URLs that start with http:// or https://
+- If no image found, use empty string ""
+- Do not use placeholder text like "No Image Url"
 
 CONTENT CLEANING:
 - Remove navigation menus, ads, cookie notices, footer content
@@ -268,18 +288,24 @@ CONTENT CLEANING:
 - Combine article fragments if they appear to be from the same story
 
 OUTPUT FORMAT:
-Return a JSON-like structure for each article:
+Return a JSON array with each article as:
 ```json
-{{
-  "title": "...",
-  "summary": "...", 
-  "publication_date": "...",
-  "author": "...",
-  "article_url": "...",
-  "main_topic": "...",
-  "technologies": ["...", "..."],
-  "content": "First paragraph or two..."
-}}
+[
+  {{
+    "title": "Article headline here",
+    "summary": "2-3 sentence summary here", 
+    "publication_date": "YYYY-MM-DD or extracted date",
+    "author": "Author name or website name if no author",
+    "article_url": "Full URL to article",
+    "image_url": "Full image URL or empty string",
+    "source": "Website/publication name",
+    "main_topic": "Primary topic",
+    "technologies": ["tech1", "tech2"],
+    "content": "First few paragraphs of content"
+  }}
+]
 ```
 
-If content is unclear or fragmented, mark with "NEEDS_REVIEW" flag."""
+IMPORTANT: Always provide fallback values. Never use null or undefined values.
+
+If content is unclear or fragmented, mark with "NEEDS_REVIEW" flag in the content field."""
