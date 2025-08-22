@@ -12,5 +12,6 @@ dependencies = [
     "langchain-deepseek>=0.1.4",
     "langgraph>=0.6.5",
     "notion-client>=2.2.1",
+    "pygithub>=2.7.0",
     "python-dotenv>=1.0.0",
 ]

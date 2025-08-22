@@ -6,12 +6,14 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel
 from firecrawl import FirecrawlApp, ScrapeOptions
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
-from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer
+from github import Github
+from repo import analyze_single_repo
+from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer
 import os
 import json
 
@@ -54,6 +56,7 @@ class AgentState(TypedDict):
     raw_content: List[dict]
     extracted_articles: List[dict]
     analyzed_articles: List[dict]
+    github_data: List[dict] 
 
 
 
@@ -81,6 +84,128 @@ def extract_tech_news(url: str, limit: int = 2) -> List[dict]:
     except Exception as e:
         print(f"Error extracting news data: {e}")
         return []
+
+@tool
+def github_repo_monitor():
+    """Hybrid approach: Monitor priority repos + discover active ones"""
+
+    g = Github(os.getenv("GITHUB_TOKEN"))
+    user = g.get_user()
+
+    priority_repos = [
+        "LinkedIn-Content-System",
+        "ai-resume-analyzer",
+        "portfolio",
+        "Saas-app",
+        "mini-zentry-design",
+    ]
+
+    all_analysis = []
+
+    for repo_name in priority_repos:
+        try:
+            repo = user.get_repo(repo_name)
+
+            analysis = analyze_single_repo(repo)
+            if analysis:
+                analysis['priority'] = True
+                all_analysis.append(analysis)
+                print(f"Priority name '{repo_name}' analyzed")
+        
+        except Exception as e:
+            print(f"❌ Priority repo {repo_name} failed: {e}")
+
+
+    try:
+        recent_repos = user.get_repos(type='owner', sort='updated')
+
+        for repo in recent_repos:
+            if (repo.name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8):
+                continue
+
+            cutoff_date = datetime.now() - timedelta(days=14)
+            if repo.pushed_at and repo.pushed_at > cutoff_date:
+                analysis = analyze_single_repo(repo)
+                if analysis:
+                    analysis['priority'] = False
+                    all_analysis.append(analysis)
+                    print(f"Discovered active repo '{repo.name}'")
+    except Exception as e:
+        print(f"❌ Auto-discovery failed: {e}")
+
+    result = {
+        'repositories': all_analysis,
+        'priority_repos_count': len([a for a in all_analysis if a.get('priority')]),
+        'discovered_repos_count': len([a for a in all_analysis if not a.get('priority')]),
+        'total_repos_analyzed': len(all_analysis),
+        'last_checked': datetime.now().isoformat(),
+        'summary': f"Analyzed {len(all_analysis)} repositories with recent activity"
+    }
+    
+    print(f"🎉 GitHub monitoring complete! Found {len(all_analysis)} active repositories")
+    return result
+
+def analyze_github_repos(state: AgentState) -> AgentState:
+    """Node 7: This node analyzes the github repos data"""
+    github_result = github_repo_monitor.invoke({})  # Call the tool
+    repositories = github_result.get("repositories", [])
+
+    if not repositories:
+        print("⚠️ No github repositories to process")
+        return {
+            "github_data": [],
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No github repositories to process")
+            ]
+        }
+
+    print(f"🧠 STEP 7: Analyzing {len(repositories)} github repositories...")
+    analyzed_repos = []
+
+    for repo_data in repositories:
+        try:
+            # Transform repo data for the prompt (remember our earlier discussion?)
+            repo_name = repo_data['name']
+            commit_messages = [commit['message'] for commit in repo_data['recent_commits']]
+            diff_summary = f"{repo_data['commits_count']} commits, +{repo_data['total_additions']} -{repo_data['total_deletions']} lines"
+            repo_description = repo_data['description']
+            tech_stack = [repo_data['language']] if repo_data['language'] != 'Unknown' else []
+            
+            # Create the prompt
+            system_prompt = repo_significance_analyzer(
+                repo_name=repo_name,
+                commit_messages=commit_messages,
+                diff_summary=diff_summary,
+                repo_description=repo_description,
+                tech_stack=tech_stack
+            )
+            
+            # Send to LLM
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Please analyze this repository for LinkedIn content potential.")
+            ]
+            
+            response = llm.invoke(messages)
+            
+            # Add LLM analysis to repo data
+            repo_copy = repo_data.copy()
+            repo_copy["llm_analysis"] = response.content
+            analyzed_repos.append(repo_copy)
+            
+            print(f"✅ Analyzed repository: {repo_name}")
+            
+        except Exception as e:
+            print(f"❌ Failed to analyze repo {repo_data.get('name', 'unknown')}: {e}")
+            continue
+    
+    return {
+        "github_data": analyzed_repos,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully analyzed {len(analyzed_repos)} repositories")
+        ]
+    }   
+            
 
 
 # Initialize LLM
@@ -515,6 +640,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
         }
 
 
+
 # Build the graph
 graph = StateGraph(AgentState)
 
@@ -526,15 +652,20 @@ graph.add_node("relevance_analyst", analyze_relevance)
 graph.add_node("categorizer", categorize_articles)
 graph.add_node("summarizer", summarize_content)
 graph.add_node("notion_saver", save_news_to_notion)
+graph.add_node("github_analyzer", analyze_github_repos)
 
 # Define the flow - FIXED VERSION
-graph.add_edge(START, "scraper")
-graph.add_edge("scraper", "extractor") 
-graph.add_edge("extractor", "relevance_analyst")
-graph.add_edge("relevance_analyst", "categorizer")
-graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
-graph.add_edge("summarizer", "notion_saver")
-graph.add_edge("notion_saver", END)
+# graph.add_edge(START, "scraper")
+# graph.add_edge("scraper", "extractor") 
+# graph.add_edge("extractor", "relevance_analyst")
+# graph.add_edge("relevance_analyst", "categorizer")
+# graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
+# graph.add_edge("summarizer", "notion_saver")
+# graph.add_edge("notion_saver", END)
+
+# to test the github analyzer alone
+graph.add_edge(START, "github_analyzer")
+graph.add_edge("github_analyzer", END)
 
 # Compile the graph
 app = graph.compile()
@@ -551,6 +682,7 @@ def run_news_analysis():
         "raw_content": [],
         "extracted_articles": [],
         "analyzed_articles": [],
+        "github_data": [],
     }
     
     try:
@@ -560,22 +692,22 @@ def run_news_analysis():
         print("✅ PIPELINE COMPLETED SUCCESSFULLY!")
         print("=" * 50)
         print(f"📊 Total Messages: {len(result['messages'])}")
-        print(f"📰 Articles Processed: {len(result.get('analyzed_articles', []))}")
+        print(f"📰 Repos Processed: {len(result.get('github_data', []))}")
         
         # Show complete JSON content for debugging
-        for i, article in enumerate(result.get('analyzed_articles', []), 1):
+        for i, repo in enumerate(result.get('github_data', []), 1):
             print(f"\n" + "="*60)
-            print(f"📄 ARTICLE {i} - COMPLETE JSON:")
+            print(f"📄 REPO {i} - COMPLETE JSON:")
             print("="*60)
             
-            # Pretty print the entire article JSON
+            # Pretty print the entire repo JSON
             import json
             try:
-                formatted_json = json.dumps(article, indent=2, ensure_ascii=False)
+                formatted_json = json.dumps(repo, indent=2, ensure_ascii=False)
                 print(formatted_json)
             except Exception as e:
                 print(f"JSON formatting error: {e}")
-                print("Raw article data:", article)
+                print("Raw repo data:", repo)
             
             print("="*60)
         
