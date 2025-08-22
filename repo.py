@@ -13,7 +13,7 @@ def analyze_single_repo(repo):
     """
     
     # Get recent commits (last 7 days)
-    since_date = datetime.now() - timedelta(days=7)
+    since_date = datetime.now() - timedelta(days=21)
     
     try:
         # Get commits as a paginated list first, then convert to list
@@ -60,11 +60,14 @@ def analyze_single_repo(repo):
     total_additions = sum(c['additions'] for c in commit_data)
     total_deletions = sum(c['deletions'] for c in commit_data)
     total_files = sum(c['files_changed'] for c in commit_data)
+
+    content_summary = repo.get_contents("README.md") if repo.get_contents else None
     
     # Prepare structured repository data
     repo_analysis = {
         'name': repo.name,
         'description': repo.description or 'No description available',
+        'content_summary': content_summary.decoded_content.decode('utf-8') if content_summary else 'No README available',
         'language': repo.language or 'Unknown',
         'stars': repo.stargazers_count,
         'forks': repo.forks_count,

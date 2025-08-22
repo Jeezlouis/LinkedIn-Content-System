@@ -11,11 +11,13 @@ from typing import List, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
-from github import Github
+from github import Github, UnknownObjectException, RateLimitExceededException
 from repo import analyze_single_repo
 from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer
 import os
-import json
+import json, re
+import time
+import traceback
 
 load_dotenv()
 
@@ -95,8 +97,8 @@ def github_repo_monitor():
     priority_repos = [
         "LinkedIn-Content-System",
         "ai-resume-analyzer",
-        "portfolio",
         "Saas-app",
+        "portfolio",
         "mini-zentry-design",
     ]
 
@@ -120,18 +122,38 @@ def github_repo_monitor():
         recent_repos = user.get_repos(type='owner', sort='updated')
 
         for repo in recent_repos:
-            if (repo.name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8):
+            rate_limit_info = g.get_rate_limit()
+            remaining = rate_limit_info.resources.core.remaining
+            reset_time = rate_limit_info.resources.core.reset  # tz-aware datetime (UTC)
+
+            if remaining < 10:  # threshold
+                # use UTC to avoid naive/aware mismatch
+                now = datetime.now(timezone.utc)
+                sleep_duration = (reset_time - now).total_seconds() + 5
+                print(
+                    f"⚠️ Low rate limit ({remaining} calls remaining). "
+                    f"Sleeping for {sleep_duration:.0f}s until {reset_time.strftime('%H:%M:%S')}"
+                )
+                time.sleep(max(0, sleep_duration))
+
+            # Then continue with repo discovery...
+            if repo.name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8:
                 continue
 
-            cutoff_date = datetime.now() - timedelta(days=14)
-            if repo.pushed_at and repo.pushed_at > cutoff_date:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=14)
+            if repo.pushed_at and repo.pushed_at.replace(tzinfo=timezone.utc) > cutoff_date:
                 analysis = analyze_single_repo(repo)
                 if analysis:
                     analysis['priority'] = False
                     all_analysis.append(analysis)
                     print(f"Discovered active repo '{repo.name}'")
+
+    except RateLimitExceededException:
+        print(f"❌ Rate limit exceeded during auto-discovery. Halting process.")
     except Exception as e:
-        print(f"❌ Auto-discovery failed: {e}")
+        print(f"❌ Auto-discovery failed with an unexpected error: {e}")
+
+
 
     result = {
         'repositories': all_analysis,
@@ -147,8 +169,18 @@ def github_repo_monitor():
 
 def analyze_github_repos(state: AgentState) -> AgentState:
     """Node 7: This node analyzes the github repos data"""
-    github_result = github_repo_monitor.invoke({})  # Call the tool
+    print("🔍 Entering analyze_github_repos...")
+
+    try:
+        github_result = github_repo_monitor.invoke({})  
+        print("📦 github_result keys:", list(github_result.keys()))
+    except Exception as e:
+        print(f"❌ github_repo_monitor.invoke failed: {e}")
+        traceback.print_exc()
+        return state
+
     repositories = github_result.get("repositories", [])
+    print(f"📂 Retrieved {len(repositories)} repositories from monitor")
 
     if not repositories:
         print("⚠️ No github repositories to process")
@@ -162,41 +194,62 @@ def analyze_github_repos(state: AgentState) -> AgentState:
     print(f"🧠 STEP 7: Analyzing {len(repositories)} github repositories...")
     analyzed_repos = []
 
-    for repo_data in repositories:
+    for i, repo_data in enumerate(repositories, 1):
+        print(f"\n🔄 [{i}/{len(repositories)}] Processing repo: {repo_data.get('name', 'unknown')}")
         try:
-            # Transform repo data for the prompt (remember our earlier discussion?)
+            # Debug raw repo_data
+            print("   ↳ Repo data keys:", list(repo_data.keys()))
+
+            # Extract repo details
             repo_name = repo_data['name']
-            commit_messages = [commit['message'] for commit in repo_data['recent_commits']]
-            diff_summary = f"{repo_data['commits_count']} commits, +{repo_data['total_additions']} -{repo_data['total_deletions']} lines"
-            repo_description = repo_data['description']
-            tech_stack = [repo_data['language']] if repo_data['language'] != 'Unknown' else []
+            commit_messages = [commit['message'] for commit in repo_data.get('recent_commits', [])]
+            content = repo_data.get('content_summary', '')
+            diff_summary = f"{repo_data.get('commits_count', 0)} commits, +{repo_data.get('total_additions', 0)} -{repo_data.get('total_deletions', 0)} lines"
+            repo_description = repo_data.get('description', '')
+            tech_stack = [repo_data.get('language')] if repo_data.get('language') and repo_data.get('language') != 'Unknown' else []
             
-            # Create the prompt
+            # Build prompt
             system_prompt = repo_significance_analyzer(
                 repo_name=repo_name,
                 commit_messages=commit_messages,
+                repo_content_summary=content,
                 diff_summary=diff_summary,
                 repo_description=repo_description,
                 tech_stack=tech_stack
             )
-            
-            # Send to LLM
+            print("   ✅ Prompt built successfully")
+
+            # Call LLM
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content="Please analyze this repository for LinkedIn content potential.")
             ]
             
             response = llm.invoke(messages)
-            
-            # Add LLM analysis to repo data
+            print("   ✅ LLM invoked successfully")
+            print("   Raw LLM response (first 300 chars):", response.content[:300])
+
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
+
+            if isinstance(parsed, dict):
+                analysis = parsed
+            elif isinstance(parsed, list) and parsed:
+                analysis = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
+
+
+            # Merge analysis into repo_data
             repo_copy = repo_data.copy()
-            repo_copy["llm_analysis"] = response.content
+            repo_copy.update({"analysis": analysis})
             analyzed_repos.append(repo_copy)
             
-            print(f"✅ Analyzed repository: {repo_name}")
+            print(f"✅ Successfully analyzed repository: {repo_name}")
             
         except Exception as e:
             print(f"❌ Failed to analyze repo {repo_data.get('name', 'unknown')}: {e}")
+            traceback.print_exc()  # <- full error + stack trace
             continue
     
     return {
@@ -204,8 +257,7 @@ def analyze_github_repos(state: AgentState) -> AgentState:
         "messages": state.get("messages", []) + [
             SystemMessage(content=f"Successfully analyzed {len(analyzed_repos)} repositories")
         ]
-    }   
-            
+    }      
 
 
 # Initialize LLM
@@ -639,6 +691,203 @@ def save_news_to_notion(state: AgentState) -> AgentState:
             ]
         }
 
+def save_repo_to_notion(state: AgentState) -> AgentState:
+    """Node 6: Save analyzed repo activites to Notion database"""
+    print("💾 STEP 6: Saving repository data to Notion database...")
+    github_data = state.get("github_data", [])
+    
+    if not github_data:
+        print("⚠️ No github data to save")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No github data to save to Notion")
+            ]
+        }
+    
+    # Helper function to safely get text values
+    def safe_text(text_value, default="Unknown"):
+        """Safely convert value to string, handling None/null values"""
+        if text_value is None:
+            return default
+        return str(text_value).strip() if str(text_value).strip() else default
+    
+    try:
+        # Initialize Notion client
+        notion = Client(auth=os.getenv("NOTION_TOKEN"))
+        database_id = os.getenv("DATABASE_ID") or os.getenv("GITHUB_DATABASE_ID")
+        
+        if not database_id:
+            raise ValueError("Missing DATABASE_ID in environment variables")
+            
+        saved_count = 0
+        print(f"📝 Attempting to save {len(github_data)} github datas...")
+        
+        for repo in github_data:
+            try:
+                print(f"🔄 Processing article: {repo.get('name', 'Unknown')}...")
+                analysis = repo.get("analysis", {})
+                
+                # Build properties safely
+                properties = {
+                    "Repository Name": {
+                        "title": [{"text": {"content": safe_text(repo.get("name"), "Untitled")}}]
+                    },
+                    "Repository URL": {
+                        "url": repo.get("repo_url", "") or ""
+                    },
+                    "Description": {
+                        "rich_text": [{"text": {"content": safe_text(repo.get("description"), "")}}]
+                    },
+                    "Content Summary": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("content_summary"), "")[:1900]}}]
+                    },
+                    "Key Hook": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("key_hook"), "")[:1900]}}]
+                    },
+                    "Diff Summary": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("diff_summary"), "")[:1900]}}]
+                    },
+                    "Primary Language": {
+                        "rich_text": [{"text": {"content": safe_text(repo.get("language"), "")}}]
+                    },
+                    "Significance Level": {
+                        "number": int(analysis.get("significance_level", "0"))  # safely default to 0
+                    },
+                    "Content Recommendation Verdict": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("content_recommendations", {}).get("verdict", ""), "")[:1900]}}]
+                    },
+                    "Story Problem-Solution": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("story_potential", {}).get("problem_solution", ""), "")[:1900]}}]
+                    },
+                    "Story Tech-Highlight": {
+                        "rich_text": [{"text": {"content": safe_text(analysis.get("story_potential", {}).get("tech_highlight", ""), "")[:1900]}}]
+                    },
+
+                    "Developers Interest": {
+                        "rich_text": [
+                            {"text": {"content": safe_text(analysis.get("audience_interest", {}).get("developers", ""), "")[:1900]}}
+                        ]
+                    },
+                    "Job Seekers Interest": {
+                        "rich_text": [
+                            {"text": {"content": safe_text(analysis.get("audience_interest", {}).get("job_seekers", ""), "")[:1900]}}
+                        ]
+                    },
+                    "Product Managers Interest": {
+                        "rich_text": [
+                            {"text": {"content": safe_text(analysis.get("audience_interest", {}).get("product_managers", ""), "")[:1900]}}
+                        ]
+                    },
+                    "Tech Leads Interest": {
+                        "rich_text": [
+                            {"text": {"content": safe_text(analysis.get("audience_interest", {}).get("tech_leads", ""), "")[:1900]}}
+                        ]
+                    },
+                    "LinkedIn Post Created": {
+                        "checkbox": False
+                    },
+                    "Status": {
+                        "status": {"name": "Analyzed"}
+                    },
+                    "Posted Date": {
+                        "date": {"start": datetime.now().date().isoformat()}
+                    },
+                    "Analysis Date": {
+                        "date": {"start": datetime.now().date().isoformat()}
+                    }
+                }
+
+                def clean_multi_select(items):
+                    """Clean and split items safely for Notion multi_select"""
+                    clean = []
+                    for item in items:
+                        if not item:
+                            continue
+                        # Split by commas if present
+                        parts = str(item).split(",")
+                        for part in parts:
+                            name = part.strip()
+                            if name:
+                                clean.append(name[:100])  # Notion max length = 100
+                    return clean[:10]  # limit to 10 tags
+
+
+                
+                technologies = analysis.get("technologies", [])
+                if technologies and isinstance(technologies, list):
+                    clean_techs = clean_multi_select(technologies)
+                    if clean_techs:
+                        properties["Tech Stack"] = {
+                            "multi_select": [{"name": tech} for tech in clean_techs]
+                        }
+                professional_value = analysis.get("professional_value", [])
+                if professional_value and isinstance(professional_value, list):
+                    clean_techs = clean_multi_select(professional_value)
+                    if clean_techs:
+                        properties["Professional Value"] = {
+                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                        }
+                technical_insights = analysis.get("technical_insights", [])
+                if technical_insights and isinstance(technical_insights, list):
+                    clean_techs = clean_multi_select(technical_insights)
+                    if clean_techs:
+                        properties["Technical Insights"] = {
+                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                        }
+                hashtags = analysis.get("hashtags", [])
+                if hashtags and isinstance(hashtags, list):
+                    clean_techs = clean_multi_select(hashtags)
+                    if clean_techs:
+                        properties["Hashtags"] = {
+                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                        }
+                content_angle = analysis.get("content_angles", [])
+                if content_angle and isinstance(content_angle, list):
+                    clean_techs = clean_multi_select(content_angle)
+                    if clean_techs:
+                        properties["Content Angle"] = {
+                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                        }
+                top_formats = analysis.get("content_recommendations", {}).get("top_formats", [])
+                if top_formats and isinstance(top_formats, list):
+                    clean_techs = clean_multi_select(top_formats)
+                    if clean_techs:
+                        properties["Top Formats"] = {
+                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                        }
+                # Create the database entry
+                notion.pages.create(
+                    parent={"database_id": database_id},
+                    properties=properties
+                )
+                
+                saved_count += 1
+                print(f"✅ Saved: {repo.get('name', 'Unknown')[:50]}...")
+                
+            except Exception as repo_error:
+                print(f"❌ Failed to save article '{repo.get('name', 'Unknown')}': {repo_error}")
+                continue
+        
+        print(f"✅ Successfully saved {saved_count} of {len(github_data)} Repos data to Notion!")
+        
+        return {
+            "github_data": github_data,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Successfully saved {saved_count} of {len(github_data)} articles to Notion")
+            ]
+        }
+        
+    except Exception as e:
+        print(f"❌ Notion saving failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "github_data": github_data,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Error saving to Notion: {str(e)}")
+            ]
+        }
+
 
 
 # Build the graph
@@ -651,8 +900,9 @@ graph.add_node("extractor", extract_structured_news)
 graph.add_node("relevance_analyst", analyze_relevance)
 graph.add_node("categorizer", categorize_articles)
 graph.add_node("summarizer", summarize_content)
-graph.add_node("notion_saver", save_news_to_notion)
+graph.add_node("notion_news_saver", save_news_to_notion)
 graph.add_node("github_analyzer", analyze_github_repos)
+graph.add_node("notion_github_saver", save_repo_to_notion)
 
 # Define the flow - FIXED VERSION
 # graph.add_edge(START, "scraper")
@@ -660,12 +910,13 @@ graph.add_node("github_analyzer", analyze_github_repos)
 # graph.add_edge("extractor", "relevance_analyst")
 # graph.add_edge("relevance_analyst", "categorizer")
 # graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
-# graph.add_edge("summarizer", "notion_saver")
-# graph.add_edge("notion_saver", END)
+# graph.add_edge("summarizer", "notion_news_saver")
+# graph.add_edge("notion_news_saver", END)
 
 # to test the github analyzer alone
 graph.add_edge(START, "github_analyzer")
-graph.add_edge("github_analyzer", END)
+graph.add_edge("github_analyzer", "notion_github_saver")
+graph.add_edge("notion_github_saver", END)
 
 # Compile the graph
 app = graph.compile()
@@ -695,21 +946,19 @@ def run_news_analysis():
         print(f"📰 Repos Processed: {len(result.get('github_data', []))}")
         
         # Show complete JSON content for debugging
-        for i, repo in enumerate(result.get('github_data', []), 1):
-            print(f"\n" + "="*60)
-            print(f"📄 REPO {i} - COMPLETE JSON:")
-            print("="*60)
+        # for i, repo in enumerate(result.get('github_data', []), 1):
+        #     print(f"\n" + "="*60)
+        #     print(f"📄 REPO {i} - COMPLETE JSON:")
+        #     print("="*60)
             
-            # Pretty print the entire repo JSON
-            import json
-            try:
-                formatted_json = json.dumps(repo, indent=2, ensure_ascii=False)
-                print(formatted_json)
-            except Exception as e:
-                print(f"JSON formatting error: {e}")
-                print("Raw repo data:", repo)
+            # try:
+            #     formatted_json = json.dumps(repo, indent=2, ensure_ascii=False)
+            #     print(formatted_json)
+            # except Exception as e:
+            #     print(f"JSON formatting error: {e}")
+            #     print("Raw repo data:", repo)
             
-            print("="*60)
+            # print("="*60)
         
         return result
         

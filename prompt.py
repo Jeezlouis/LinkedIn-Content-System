@@ -199,7 +199,7 @@ Engagement Prediction:
 
 Base prediction on: Content quality, topic relevance, timing, historical patterns."""
 
-def repo_significance_analyzer(repo_name, commit_messages, diff_summary, repo_description, tech_stack):
+def repo_significance_analyzer(repo_name, commit_messages, diff_summary, repo_description, repo_content_summary, tech_stack):
     """Analyzes repository changes for LinkedIn content potential"""
     return f"""Analyze these repository changes for LinkedIn content potential:
 
@@ -207,18 +207,40 @@ Repository: {repo_name}
 Recent Commits: {commit_messages}
 Code Changes: {diff_summary}
 Project Description: {repo_description}
+Project Content Summary: {repo_content_summary}
 Technologies Used: {tech_stack}
 
-Analysis:
-- Significance Level (1-10): [How noteworthy are these changes?]
-- Content Angle: [Project Showcase, Technical Tutorial, Learning Journey, etc.]
-- Story Potential: [What narrative could this tell?]
-- Technical Insights: [What could others learn from this?]
-- Professional Value: [How does this demonstrate skills/growth?]
-- Audience Interest: [Who would find this relevant?]
-- Content Recommendation: [Should this become a LinkedIn post?]
+OUTPUT FORMAT:
+Return ONLY valid JSON (no explanations, no markdown). The JSON should look like this:
+
+{{
+  "significance_level": between 1 - 10,
+  "content_angles": ["Project Showcase", "Technical Tutorial", "Learning Journey"],
+  "story_potential": {{
+    "problem_solution": "string",
+    "tech_highlight": "string"
+  }},
+  "technical_insights": ["string", "string"],
+  "professional_value": ["string", "string"],
+  "technologies": ["string", "string"]
+  "audience_interest": {{
+    "developers": "string",
+    "job_seekers": "string",
+    "product_managers": "string",
+    "tech_leads": "string"
+  }},
+  "content_recommendations": {{
+    "verdict": "string",
+    "top_formats": ["string", "string"]
+  }},
+  "content_summary": "The summary of the entire project in 2 - 3 sentences",
+  "diff_summary": "string",
+  "key_hook": "string",
+  "hashtags": ["string", "string"]
+}}
 
 Focus on: New features, architectural decisions, problem-solving approaches, learning experiences."""
+
 
 def performance_analyzer(post_text, engagement_metrics, comment_themes, posting_details, comparison_data):
     """Analyzes LinkedIn post performance for future optimization"""
