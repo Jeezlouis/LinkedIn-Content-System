@@ -13,7 +13,7 @@ from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
 from github import Github, UnknownObjectException, RateLimitExceededException
 from repo import analyze_single_repo
-from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer
+from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator
 import os
 import json, re
 import time
@@ -59,6 +59,7 @@ class AgentState(TypedDict):
     extracted_articles: List[dict]
     analyzed_articles: List[dict]
     github_data: List[dict] 
+    analyzed_content: List[dict]
 
 
 
@@ -296,8 +297,9 @@ def scrape_content(state: AgentState) -> AgentState:
             ]
         }
 
+
 def extract_structured_news(state: AgentState) -> AgentState:
-    """Node 2: Extract structured information from scraped content"""
+    """Node 2: Extract structured information from scraped content - SIMPLIFIED"""
     print("🧠 STEP 2: Using LLM to extract structured articles...")
     raw_content = state.get("raw_content", [])
     
@@ -330,62 +332,66 @@ def extract_structured_news(state: AgentState) -> AgentState:
     # Create messages for the LLM
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content="Please extract and structure the news articles from the scraped content above.")
+        HumanMessage(content="Extract the news articles and return only valid JSON array.")
     ]
     
     try:
         # Get LLM response
+        print("🤖 Calling LLM for news extraction...")
         response = llm.invoke(messages)
+        response_text = response.content.strip()
         
-        # Parse JSON response - handle markdown code blocks
+        # Simple JSON extraction - try multiple methods
+        extracted_articles = None
+        
+        # Method 1: Try direct JSON parsing
         try:
-            response_text = response.content.strip()
-            
-            # Extract JSON from markdown code blocks if present
-            if "```json" in response_text:
-                start_idx = response_text.find("```json") + 7
-                end_idx = response_text.find("```", start_idx)
-                if end_idx > start_idx:
-                    json_text = response_text[start_idx:end_idx].strip()
-                else:
-                    json_text = response_text[start_idx:].strip()
-            elif "```" in response_text:
-                start_idx = response_text.find("```") + 3
-                end_idx = response_text.find("```", start_idx)
-                if end_idx > start_idx:
-                    json_text = response_text[start_idx:end_idx].strip()
-                else:
-                    json_text = response_text[start_idx:].strip()
-            else:
-                # No code blocks, try to find JSON array/object
-                json_text = response_text
-                for start_char in ['[', '{']:
-                    if start_char in json_text:
-                        start_idx = json_text.find(start_char)
-                        json_text = json_text[start_idx:]
-                        break
-            
-            # Parse the extracted JSON
-            extracted_articles = json.loads(json_text)
-            if not isinstance(extracted_articles, list):
-                extracted_articles = [extracted_articles]
-
-            
-        except json.JSONDecodeError as json_error:
-            # If JSON parsing fails, create a fallback structure
+            extracted_articles = json.loads(response_text)
+        except:
+            pass
+        
+        # Method 2: Remove code blocks and try again
+        if not extracted_articles:
+            try:
+                clean_text = re.sub(r'```[a-z]*\n?', '', response_text)
+                clean_text = re.sub(r'\n```', '', clean_text)
+                extracted_articles = json.loads(clean_text.strip())
+            except:
+                pass
+        
+        # Method 3: Find JSON array in text
+        if not extracted_articles:
+            try:
+                start = response_text.find('[')
+                end = response_text.rfind(']') + 1
+                if start >= 0 and end > start:
+                    json_text = response_text[start:end]
+                    extracted_articles = json.loads(json_text)
+            except:
+                pass
+        
+        # Ensure it's a list
+        if extracted_articles and not isinstance(extracted_articles, list):
+            extracted_articles = [extracted_articles]
+        
+        # If all methods failed, create fallback
+        if not extracted_articles:
+            print("⚠️ JSON parsing failed, creating fallback article")
             extracted_articles = [{
                 "title": "Extraction Error - JSON Parse Failed",
-                "summary": response.content[:200] + "...",
-                "publication_date": datetime.now(timezone.utc).isoformat(),
-                "author": "Unknown",
+                "summary": "Could not parse the article content properly",
+                "publication_date": datetime.now(timezone.utc).date().isoformat(),
+                "author": "TLDR",
                 "article_url": "https://tldr.tech/",
+                "image_url": "",
+                "source": "TLDR",
                 "main_topic": "Technology",
-                "image_url": "No Image Url",
                 "technologies": [],
-                "content": response.content[:500]
+                "content": response_text[:300] + "..." if len(response_text) > 300 else response_text
             }]
         
         print(f"✅ Successfully extracted {len(extracted_articles)} articles")
+        
         return {
             "extracted_articles": extracted_articles,
             "messages": state.get("messages", []) + [
@@ -395,8 +401,23 @@ def extract_structured_news(state: AgentState) -> AgentState:
         
     except Exception as e:
         print(f"❌ Extraction failed: {str(e)}")
+        
+        # Return fallback data
+        fallback_articles = [{
+            "title": "System Error - Extraction Failed",
+            "summary": f"Error occurred during extraction: {str(e)}",
+            "publication_date": datetime.now(timezone.utc).date().isoformat(),
+            "author": "TLDR",
+            "article_url": "https://tldr.tech/",
+            "image_url": "",
+            "source": "TLDR",
+            "main_topic": "Technology",
+            "technologies": [],
+            "content": "System error prevented content extraction"
+        }]
+        
         return {
-            "extracted_articles": [],
+            "extracted_articles": fallback_articles,
             "messages": state.get("messages", []) + [
                 SystemMessage(content=f"Error in news extraction: {str(e)}")
             ]
@@ -583,6 +604,20 @@ def save_news_to_notion(state: AgentState) -> AgentState:
             return default
         return str(text_value).strip() if str(text_value).strip() else default
     
+    def clean_multi_select(items):
+        """Clean and split items safely for Notion multi_select"""
+        clean = []
+        for item in items:
+            if not item:
+                continue
+            # Split by commas if present
+            parts = str(item).split(",")
+            for part in parts:
+                name = part.strip()
+                if name:
+                    clean.append(name[:100])  # Notion max length = 100
+        return clean[:10]  # limit to 10 tags
+    
     try:
         # Initialize Notion client
         notion = Client(auth=os.getenv("NOTION_TOKEN"))
@@ -595,16 +630,24 @@ def save_news_to_notion(state: AgentState) -> AgentState:
         print(f"📝 Attempting to save {len(articles)} articles...")
         
         for article in articles:
-            text = article.get("relevance_analysis", "")
-
-            # Extract just the first number before '/10'
-            match = re.search(r"\*\*Relevance Score\*\*:\s*(\d+)/10", text)
-            if match:
-                relevance_score = int(match.group(1)) 
-            else:
-                relevance_score = None
             try:
                 print(f"🔄 Processing article: {article.get('title', 'Unknown')[:50]}...")
+                
+                # Extract data from nested structures
+                relevance_analysis = article.get("relevance_analysis", {})
+                category_data = article.get("category", {})
+                summary_data = article.get("summary", {})
+                
+                # Extract relevance score safely
+                relevance_score = None
+                if isinstance(relevance_analysis, dict):
+                    relevance_score = relevance_analysis.get("relevance_score", 0)
+                elif isinstance(relevance_analysis, str):
+                    # Extract score from text if it's still a string
+                    import re
+                    match = re.search(r"(?:relevance_score|score).*?(\d+)", relevance_analysis.lower())
+                    if match:
+                        relevance_score = int(match.group(1))
                 
                 # Build properties safely
                 properties = {
@@ -629,60 +672,200 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                     "Main Topic": {
                         "rich_text": [{"text": {"content": safe_text(article.get("main_topic"))}}]
                     },
-                    "Relevance Analysis": {
-                        "rich_text": [{"text": {"content": safe_text(article.get("relevance_analysis"), "")[:1900]}}]
-                    },
-                    
-                    # Add default values for required fields
-                    "Relevance Score": {
-                        "number": int(relevance_score, "")
-                    },
-                    "Technical Depth": {
-                        "select": {"name": safe_text(article.get("technical_depth", "Unknown"))[:100]}
-                    },
-                    "Post Angle": {
-                        "select": {"name": "News Commentary"}
-                    },
-                    "Engagement Potential": {
-                        "select": {"name": "Medium"}
-                    },
                     "Status": {
                         "status": {"name": "Analyzed"}
                     },
-                    "Trending Potential": {
-                        "checkbox": False
-                    },
                     "Post Created": {
                         "checkbox": False
-                    },
-                    "Content Category": {
-                        "multi_select": [{"name": "Industry Trends"}]
-                    },
-                    "Target Audience": {
-                        "multi_select": [
-                            {"name": "Junior Developers"},
-                            {"name": "Mid-level Developers"}
-                        ]
                     },
                     "Scraped Date": {
                         "date": {"start": datetime.now().date().isoformat()}
                     }
                 }
                 
-                # Handle optional fields safely
+                # Handle relevance score
+                if relevance_score is not None:
+                    properties["Relevance Score"] = {
+                        "number": int(relevance_score)
+                    }
                 
+                # Handle relevance analysis data
+                if isinstance(relevance_analysis, dict):
+                    # Content Category
+                    content_category = relevance_analysis.get("content_category")
+                    if content_category:
+                        properties["Content Category"] = {
+                            "rich_text": [{"text": {"content": safe_text(content_category)[:1900]}}]
+                        }
+                    
+                    # Technical Depth
+                    technical_depth = relevance_analysis.get("technical_depth")
+                    if technical_depth:
+                        properties["Technical Depth"] = {
+                            "select": {"name": safe_text(technical_depth)[:100]}
+                        }
+                    
+                    # Post Angle
+                    post_angle = relevance_analysis.get("posting_angle")
+                    if post_angle:
+                        properties["Post Angle"] = {
+                            "select": {"name": safe_text(post_angle)[:100]}
+                        }
+                    
+                    # Audience Appeal
+                    audience_appeal = relevance_analysis.get("audience_appeal")
+                    if audience_appeal:
+                        properties["Audience Appeal"] = {
+                            "rich_text": [{"text": {"content": safe_text(audience_appeal)[:1900]}}]
+                        }
+                    
+                    # Key Insights
+                    key_insights = relevance_analysis.get("key_insights", [])
+                    if key_insights and isinstance(key_insights, list):
+                        insights_text = "; ".join([str(insight) for insight in key_insights])
+                        properties["Key Insights"] = {
+                            "rich_text": [{"text": {"content": safe_text(insights_text)[:1900]}}]
+                        }
+                    
+                    # Trending Potential
+                    trending_data = relevance_analysis.get("trending_potential", {})
+                    if isinstance(trending_data, dict):
+                        trending_level = trending_data.get("level")
+                        if trending_level:
+                            properties["Engagement Potential"] = {
+                                "select": {"name": safe_text(trending_level)[:100]}
+                            }
+                        
+                        trending_reasoning = trending_data.get("reasoning")
+                        if trending_reasoning:
+                            properties["Trending Reasoning"] = {
+                                "rich_text": [{"text": {"content": safe_text(trending_reasoning)[:1900]}}]
+                            }
+                
+                # Handle category data
+                if isinstance(category_data, dict):
+                    primary_category = category_data.get("primary_category")
+                    if primary_category:
+                        properties["Primary Category"] = {
+                            "select": {"name": safe_text(primary_category)[:100]}
+                        }
+                    
+                    content_type = category_data.get("content_type")
+                    if content_type:
+                        properties["Content Type"] = {
+                            "select": {"name": safe_text(content_type)[:100]}
+                        }
+                    
+                    urgency_level = category_data.get("urgency_level")
+                    if urgency_level:
+                        properties["Urgency Level"] = {
+                            "select": {"name": safe_text(urgency_level)[:100]}
+                        }
+                    
+                    # Handle applicable categories
+                    applicable_categories = category_data.get("applicable_categories", {})
+                    if isinstance(applicable_categories, dict):
+                        # Programming Languages
+                        prog_langs = applicable_categories.get("programming_languages", [])
+                        if prog_langs:
+                            clean_langs = clean_multi_select(prog_langs)
+                            if clean_langs:
+                                properties["Programming Languages"] = {
+                                    "multi_select": [{"name": lang} for lang in clean_langs]
+                                }
+                        
+                        # Frameworks/Libraries
+                        frameworks = applicable_categories.get("frameworks_libraries", [])
+                        if frameworks:
+                            clean_frameworks = clean_multi_select(frameworks)
+                            if clean_frameworks:
+                                properties["Frameworks Libraries"] = {
+                                    "multi_select": [{"name": framework} for framework in clean_frameworks]
+                                }
+                        
+                        # Industry Trends
+                        trends = applicable_categories.get("industry_trends", [])
+                        if trends:
+                            clean_trends = clean_multi_select(trends)
+                            if clean_trends:
+                                properties["Industry Trends"] = {
+                                    "multi_select": [{"name": trend} for trend in clean_trends]
+                                }
+                        
+                        # Development Practices
+                        practices = applicable_categories.get("development_practices", [])
+                        if practices:
+                            clean_practices = clean_multi_select(practices)
+                            if clean_practices:
+                                properties["Development Practices"] = {
+                                    "multi_select": [{"name": practice} for practice in clean_practices]
+                                }
+                        
+                        # Tools/Platforms
+                        tools = applicable_categories.get("tools_platforms", [])
+                        if tools:
+                            clean_tools = clean_multi_select(tools)
+                            if clean_tools:
+                                properties["Tools Platforms"] = {
+                                    "multi_select": [{"name": tool} for tool in clean_tools]
+                                }
+                
+                # Handle summary data
+                if isinstance(summary_data, dict):
+                    # Key Points
+                    key_points = summary_data.get("key_points", [])
+                    if key_points and isinstance(key_points, list):
+                        points_text = "; ".join([str(point) for point in key_points])
+                        properties["Key Points"] = {
+                            "rich_text": [{"text": {"content": safe_text(points_text)[:1900]}}]
+                        }
+                    
+                    # Technical Details
+                    tech_details = summary_data.get("technical_details", [])
+                    if tech_details:
+                        clean_tech = clean_multi_select(tech_details)
+                        if clean_tech:
+                            properties["Technical Details"] = {
+                                "multi_select": [{"name": tech} for tech in clean_tech]
+                            }
+                    
+                    # Industry Impact
+                    industry_impact = summary_data.get("industry_impact")
+                    if industry_impact:
+                        properties["Industry Impact"] = {
+                            "rich_text": [{"text": {"content": safe_text(industry_impact)[:1900]}}]
+                        }
+                    
+                    # Personal Relevance Hooks
+                    hooks = summary_data.get("personal_relevance_hooks", [])
+                    if hooks and isinstance(hooks, list):
+                        hooks_text = "; ".join([str(hook) for hook in hooks])
+                        properties["Personal Relevance Hooks"] = {
+                            "rich_text": [{"text": {"content": safe_text(hooks_text)[:1900]}}]
+                        }
+                    
+                    # Related Technologies
+                    related_tech = summary_data.get("related_technologies", [])
+                    if related_tech:
+                        clean_related = clean_multi_select(related_tech)
+                        if clean_related:
+                            properties["Related Technologies"] = {
+                                "multi_select": [{"name": tech} for tech in clean_related]
+                            }
+                
+                # Handle optional fields from original article
                 # Image URL
                 image_url = article.get("image_url")
                 if image_url and isinstance(image_url, str) and image_url.startswith("http"):
                     properties["Image URL"] = {"url": image_url}
                 
-                # Technologies
+                # Technologies from original article
                 technologies = article.get("technologies", [])
                 if technologies and isinstance(technologies, list):
-                    clean_techs = [str(tech).strip() for tech in technologies if tech and str(tech).strip()][:10]
+                    clean_techs = clean_multi_select(technologies)
                     if clean_techs:
                         properties["Technologies"] = {
-                            "multi_select": [{"name": tech[:100]} for tech in clean_techs]
+                            "multi_select": [{"name": tech} for tech in clean_techs]
                         }
                 
                 # Publication Date
@@ -710,6 +893,8 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                 
             except Exception as article_error:
                 print(f"❌ Failed to save article '{article.get('title', 'Unknown')}': {article_error}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         print(f"✅ Successfully saved {saved_count} of {len(articles)} articles to Notion!")
@@ -733,7 +918,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
         }
 
 def save_repo_to_notion(state: AgentState) -> AgentState:
-    """Node 6: Save analyzed repo activites to Notion database"""
+    """Node 7: Save analyzed repo activites to Notion database"""
     print("💾 STEP 6: Saving repository data to Notion database...")
     github_data = state.get("github_data", [])
     
@@ -930,6 +1115,151 @@ def save_repo_to_notion(state: AgentState) -> AgentState:
         }
 
 
+def post_content_strategist(state: AgentState) -> AgentState:
+    """Node 8: This is the agent that generates strategic content"""
+    news_content = state.get("analyzed_articles", [])
+    github_content = state.get("github_data", [])
+
+    updated_content = []
+
+    if not news_content:
+        print("⚠️ No news content to analyze")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No news content to analyze")
+            ]
+        }
+
+    if not github_content:
+        print("⚠️ No github content to analyze")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No github content to analyze")
+            ]
+        }
+    
+    for news in news_content:
+        for github in github_content:
+
+            system_prompt = content_strategist(
+                news_articles=news,
+                repo_updates=github,
+                past_post_metrics=0,
+                days_since_last_post=0,
+                recent_topics="I've never posted",
+                user_skills=["Python", "JavaScript / JSX", "TypeScript / TSX", "React.js", "Next.js", "Django",
+                "FastAPI", "LangChain", "LangGraph", "LLM Prompt Engineering", "Playwright", "Browser-use Framework", 
+                "Bright Data Proxy Integration","Firecrawl","PostgreSQL / MySQL","Notion API","REST API Design",
+                "Authentication Systems (Django-based)","Matplotlib","Git & GitHub","uv / Virtual Environments",
+                "Debugging & Logging","Docker Basics","Google Cloud AI Platform","Render"
+                ],
+                follower_demographics="My followers are mainly tech enthusiasts, developers, and AI/ML learners, with a mix of students, early professionals, and founders exploring the future of software and automation.",
+                personal_brand="Building at the intersection of AI, automation, and software development — sharing insights, projects, and tools that make tech more practical and accessible."
+            )
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Generate a strategic content for today's LinkedIn post."),
+            ]
+
+            try:
+                response = llm.invoke(messages)
+
+                clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+                parsed = json.loads(clean_content)
+
+                if isinstance(parsed, dict):
+                    analysis = parsed
+                elif isinstance(parsed, list) and parsed:
+                    analysis = parsed[0]
+                else:
+                    raise ValueError(f"Unexpected JSON structure: {parsed}")
+
+                news_content_copy = news.copy()
+                github_content_copy = github.copy() 
+                news_content_copy.update({"news_strategist_analysis": analysis})
+                github_content_copy.update({"github_strategist_analysis": analysis})
+                updated_content.append(news_content_copy)
+                updated_content.append(github_content_copy)
+
+            except Exception as e:
+                print(f"❌ Content Strategist failed: {str(e)}")
+                continue
+
+    return {
+        "analyzed_content": updated_content,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully analyzed content for {len(updated_content)} articles and repositories")
+        ]
+    }
+
+def content_writer_agent(state: AgentState) -> AgentState:
+    """Agent that generates LinkedIn posts and variations"""
+    strategy_content = state.get("analyzed_content", [])
+
+    if not strategy_content:
+        print("⚠️ No strategy content available for Content Writer Agent")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No strategy content to generate LinkedIn posts")
+            ]
+        }
+
+    linkedin_posts = []
+
+    for item in strategy_content:
+        try:
+            # 1. Generate base post
+            system_prompt_writer = linkedin_post_writer(
+                content_type=item.get("content_type", "tech update"),
+                source_material=item.get("content", ""),
+                previous_posts="I've never posted before",
+                audience="Developers, founders, and tech enthusiasts",
+                content_angle=item.get("post_angle", "insight"),
+                key_insights=item.get("key_insights", [])
+            )
+            messages_writer = [
+                SystemMessage(content=system_prompt_writer),
+                HumanMessage(content="Write the LinkedIn post in JSON as instructed.")
+            ]
+            writer_response = llm.invoke(messages_writer)
+            clean_writer_response = re.sub(r"```(?:json)?|```", "", writer_response.content).strip()
+            base_post_data = json.loads(clean_writer_response)
+
+            base_post_text = base_post_data.get("post_content", "")
+
+            # 2. Generate variations
+            system_prompt_variations = post_variation_generator(
+                original_concept=base_post_text,
+                audience="Developers, founders, and tech enthusiasts",
+                voice_sample="Professional but conversational software developer voice"
+            )
+            messages_variations = [
+                SystemMessage(content=system_prompt_variations),
+                HumanMessage(content="Generate 3 variations of the LinkedIn post in JSON.")
+            ]
+            variation_response = llm.invoke(messages_variations)
+            clean_variation_response = re.sub(r"```(?:json)?|```", "", variation_response.content).strip()
+            variations_data = json.loads(clean_variation_response)
+
+            # Store final combined result
+            linkedin_posts.append({
+                "base_post": base_post_data,
+                "variations": variations_data
+            })
+
+        except Exception as e:
+            print(f"❌ Content Writer Agent failed: {str(e)}")
+            continue
+
+    return {
+        "linkedin_posts": linkedin_posts,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Generated {len(linkedin_posts)} LinkedIn posts with variations")
+        ]
+    }
+
+
 
 # Build the graph
 graph = StateGraph(AgentState)
@@ -946,18 +1276,18 @@ graph.add_node("github_analyzer", analyze_github_repos)
 graph.add_node("notion_github_saver", save_repo_to_notion)
 
 # Define the flow - FIXED VERSION
-# graph.add_edge(START, "scraper")
-# graph.add_edge("scraper", "extractor") 
-# graph.add_edge("extractor", "relevance_analyst")
-# graph.add_edge("relevance_analyst", "categorizer")
-# graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
-# graph.add_edge("summarizer", "notion_news_saver")
-# graph.add_edge("notion_news_saver", END)
+graph.add_edge(START, "scraper")
+graph.add_edge("scraper", "extractor") 
+graph.add_edge("extractor", "relevance_analyst")
+graph.add_edge("relevance_analyst", "categorizer")
+graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
+graph.add_edge("summarizer", "notion_news_saver")
+graph.add_edge("notion_news_saver", END)
 
 # to test the github analyzer alone
-graph.add_edge(START, "github_analyzer")
-graph.add_edge("github_analyzer", "notion_github_saver")
-graph.add_edge("notion_github_saver", END)
+# graph.add_edge(START, "github_analyzer")
+# graph.add_edge("github_analyzer", "notion_github_saver")
+# graph.add_edge("notion_github_saver", END)
 
 # Compile the graph
 app = graph.compile()

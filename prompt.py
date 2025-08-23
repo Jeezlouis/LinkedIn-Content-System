@@ -385,70 +385,37 @@ Return ONLY valid JSON in this exact format:
 Generate actionable insights for improving content strategy and audience engagement."""
 
 def news_extractor(scraped_content, source_url, timestamp):
-    """Extracts structured information from web-scraped technology news"""
+    """Extracts structured information from web-scraped technology news - SIMPLIFIED"""
     return f"""You are an expert at extracting structured information from web-scraped technology news content.
 
 Raw scraped content: {scraped_content}
 Source website: {source_url}
 Scrape timestamp: {timestamp}
 
-Extract the following information:
+INSTRUCTIONS:
+1. Extract all distinct news articles from the content
+2. Return ONLY valid JSON - no explanations, no markdown blocks
+3. If information is missing, use these defaults:
+   - Author: "TLDR"
+   - Article URL: "{source_url}"
+   - Image URL: ""
+   - Source: "TLDR"
 
-ARTICLES:
-For each distinct news article found, provide:
-- Title: [Clean article headline]
-- Summary: [2-3 sentence summary of the main points]  
-- Publication Date: [When was this published - extract from content]
-- Author: [Article author if available. If NO author found, use the website name from the source_url. For example: if source is "https://techcrunch.com", use "TechCrunch" as author]
-- Article URL: [Direct link to full article if found]
-- Image URL: [The image link linked to the article if available, must be a complete URL starting with http/https]
-- Source: [Extract the website/publication name from the content or use domain name from source_url]
-- Main Topic: [Primary subject matter]
-- Key Technologies Mentioned: [Specific tools, languages, frameworks, companies]
+REQUIRED OUTPUT FORMAT (return exactly this structure):
 
-AUTHOR RULES:
-- If article has author byline (e.g., "By John Smith", "Written by Jane Doe"), use that
-- If NO author found, extract website name from source_url and use as author
-- Examples: 
-  * https://techcrunch.com → "TechCrunch"
-  * https://tldr.tech → "TLDR"
-  * https://hacker-news.com → "Hacker News"
-
-SOURCE RULES:
-- Extract publication name from content if possible
-- If not found, use domain name from source_url
-- Make it human-readable (e.g., "TechCrunch", not "techcrunch.com")
-
-IMAGE URL RULES:
-- Only include valid image URLs that start with http:// or https://
-- If no image found, use empty string ""
-- Do not use placeholder text like "No Image Url"
-
-CONTENT CLEANING:
-- Remove navigation menus, ads, cookie notices, footer content
-- Ignore comments sections and related article suggestions
-- Focus only on actual article content
-- Combine article fragments if they appear to be from the same story
-
-OUTPUT FORMAT:
-Return a JSON array with each article as:
-```json
 [
   {{
     "title": "Article headline here",
-    "summary": "2-3 sentence summary here", 
-    "publication_date": "YYYY-MM-DD or extracted date",
-    "author": "Author name or website name if no author",
-    "article_url": "Full URL to article",
-    "image_url": "Full image URL or empty string",
-    "source": "Website/publication name",
-    "main_topic": "Primary topic",
+    "summary": "Brief 2-3 sentence summary",
+    "publication_date": "2024-01-01",
+    "author": "TLDR",
+    "article_url": "{source_url}",
+    "image_url": "",
+    "source": "TLDR",
+    "main_topic": "Technology",
     "technologies": ["tech1", "tech2"],
-    "content": "First few paragraphs of content"
+    "content": "First paragraph of article content"
   }}
 ]
-```
 
-IMPORTANT: Always provide fallback values. Never use null or undefined values.
-
-If content is unclear or fragmented, mark with "NEEDS_REVIEW" flag in the content field."""
+Return only the JSON array. No other text."""
