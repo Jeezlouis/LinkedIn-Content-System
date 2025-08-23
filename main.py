@@ -227,7 +227,6 @@ def analyze_github_repos(state: AgentState) -> AgentState:
             
             response = llm.invoke(messages)
             print("   ✅ LLM invoked successfully")
-            print("   Raw LLM response (first 300 chars):", response.content[:300])
 
             clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
             parsed = json.loads(clean_content)
@@ -432,8 +431,20 @@ def analyze_relevance(state: AgentState) -> AgentState:
         try:
             response = llm.invoke(messages)
 
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
+
+            if isinstance(parsed, dict):
+                analysis = parsed
+            elif isinstance(parsed, list) and parsed:
+                analysis = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
+
+
+
             article_copy = article.copy()
-            article_copy["relevance_analysis"] = response.content
+            article_copy.update({"relevance_analysis": analysis})
             updated_article.append(article_copy)
 
         except Exception as e:
@@ -475,8 +486,19 @@ def categorize_articles(state: AgentState) -> AgentState:
         try:
             response = llm.invoke(messages)
 
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
+
+            if isinstance(parsed, dict):
+                category = parsed
+            elif isinstance(parsed, list) and parsed:
+                category = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
+
+
             article_copy = article.copy()
-            article_copy["category"] = response.content
+            article_copy.update({"category": category})
             updated_article.append(article_copy)
 
         except Exception as e:
@@ -516,8 +538,18 @@ def summarize_content(state: AgentState) -> AgentState:
         try:
             response = llm.invoke(messages)
 
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
+
+            if isinstance(parsed, dict):
+                analysis = parsed
+            elif isinstance(parsed, list) and parsed:
+                analysis = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
+
             article_copy = article.copy()
-            article_copy["summary"] = response.content
+            article_copy.update({"summary": analysis})
             updated_article.append(article_copy)
         except Exception as e:
             print(f"Skipping article due to error {e}")
@@ -563,6 +595,14 @@ def save_news_to_notion(state: AgentState) -> AgentState:
         print(f"📝 Attempting to save {len(articles)} articles...")
         
         for article in articles:
+            text = article.get("relevance_analysis", "")
+
+            # Extract just the first number before '/10'
+            match = re.search(r"\*\*Relevance Score\*\*:\s*(\d+)/10", text)
+            if match:
+                relevance_score = int(match.group(1)) 
+            else:
+                relevance_score = None
             try:
                 print(f"🔄 Processing article: {article.get('title', 'Unknown')[:50]}...")
                 
@@ -592,12 +632,13 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                     "Relevance Analysis": {
                         "rich_text": [{"text": {"content": safe_text(article.get("relevance_analysis"), "")[:1900]}}]
                     },
+                    
                     # Add default values for required fields
                     "Relevance Score": {
-                        "number": 5
+                        "number": int(relevance_score, "")
                     },
                     "Technical Depth": {
-                        "select": {"name": "Intermediate"}
+                        "select": {"name": safe_text(article.get("technical_depth", "Unknown"))[:100]}
                     },
                     "Post Angle": {
                         "select": {"name": "News Commentary"}

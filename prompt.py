@@ -3,6 +3,7 @@ Simple Prompt Functions for LinkedIn Automation
 Just copy and paste these functions into your main file
 """
 
+
 def news_relevance_score(article, user_expertise, target_audience):
     """Analyzes news article relevance for LinkedIn content creation"""
     return f"""You are a professional content strategist for a software developer's LinkedIn presence. 
@@ -13,14 +14,20 @@ Article: {article}
 User Profile: {user_expertise}
 User Audience: {target_audience}
 
-Provide analysis in this format:
-- Relevance Score (1-10): 
-- Content Category: [AI/ML, Web Dev, Startups, DevOps, etc.]
-- Technical Depth: [Beginner, Intermediate, Advanced]
-- Posting Angle: [Commentary, Tutorial, News Update, Opinion]
-- Key Insights: [3-5 bullet points]
-- Audience Appeal: [Why this matters to the user's network]
-- Trending Potential: [High/Medium/Low with reasoning]"""
+Return ONLY valid JSON in this exact format:
+{{
+    "relevance_score": score_1_to_10,
+    "content_category": "AI/ML|Web Dev|Startups|DevOps|etc",
+    "technical_depth": "Beginner|Intermediate|Advanced",
+    "posting_angle": "Commentary|Tutorial|News Update|Opinion",
+    "key_insights": ["insight 1", "insight 2", "insight 3"],
+    "audience_appeal": "why this matters to the user's network",
+    "trending_potential": {{
+        "level": "High|Medium|Low",
+        "reasoning": "explanation for trending potential"
+    }}
+}}
+"""
 
 def news_summarizer(article, source):
     """Extracts key information from technology news articles"""
@@ -29,13 +36,16 @@ def news_summarizer(article, source):
 Article: {article}
 Source: {source}
 
-Create a structured summary:
-- Main Topic: [One sentence description]
-- Key Points: [3-4 most important insights]
-- Technical Details: [Specific technologies/methods mentioned]
-- Industry Impact: [How this affects the software development industry]
-- Personal Relevance Hooks: [Angles a developer could comment on]
-- Related Technologies: [List relevant tech stack components]"""
+Return ONLY valid JSON in this exact format:
+{{
+    "main_topic": "One sentence description",
+    "key_points": ["point 1", "point 2", "point 3", "point 4"],
+    "technical_details": ["specific technologies/methods mentioned"],
+    "industry_impact": "How this affects the software development industry",
+    "personal_relevance_hooks": ["angle 1", "angle 2", "angle 3"],
+    "related_technologies": ["tech 1", "tech 2", "tech 3"]
+}}
+"""
 
 def article_categorizer(title, content, source):
     """Categorizes technology content into relevant topics"""
@@ -47,18 +57,21 @@ Article Title: {title}
 Article Content: {content}
 Source: {source}
 
-Select ALL applicable categories:
-- Programming Languages (specify which: Python, JavaScript, Go, etc.)
-- Frameworks & Libraries (React, Django, TensorFlow, etc.)
-- Development Practices (DevOps, Testing, Architecture, etc.)
-- Industry Trends (AI/ML, Blockchain, Cloud, Mobile, etc.)
-- Career & Business (Startups, Leadership, Remote Work, etc.)
-- Tools & Platforms (GitHub, AWS, Docker, etc.)
-
-Also determine:
-- Primary Category: [Most relevant single category]
-- Content Type: [Breaking News, Analysis, Tutorial, Opinion, Research]
-- Urgency Level: [Breaking/Trending/Evergreen]"""
+Return ONLY valid JSON in this exact format:
+{{
+    "applicable_categories": {{
+        "programming_languages": ["Python", "JavaScript", "Go", "etc"],
+        "frameworks_libraries": ["React", "Django", "TensorFlow", "etc"],
+        "development_practices": ["DevOps", "Testing", "Architecture", "etc"],
+        "industry_trends": ["AI/ML", "Blockchain", "Cloud", "Mobile", "etc"],
+        "career_business": ["Startups", "Leadership", "Remote Work", "etc"],
+        "tools_platforms": ["GitHub", "AWS", "Docker", "etc"]
+    }},
+    "primary_category": "Most relevant single category",
+    "content_type": "Breaking News|Analysis|Tutorial|Opinion|Research",
+    "urgency_level": "Breaking|Trending|Evergreen"
+}}
+"""
 
 def content_strategist(news_articles, repo_updates, past_post_metrics, days_since_last_post, recent_topics, user_skills, follower_demographics, personal_brand):
     """Makes strategic decisions about what content to create"""
@@ -76,15 +89,21 @@ User Profile:
 - Audience: {follower_demographics}
 - Brand Voice: {personal_brand}
 
-Decision Framework:
-1. Content Opportunity Score (1-10)
-2. Recommended Content Type: [News Commentary, Project Showcase, Thought Leadership, Tutorial, None Today]
-3. Primary Topic Focus
-4. Posting Urgency: [Post Today, This Week, Save for Later]
-5. Content Angle: [What unique perspective to take]
-6. Reasoning: [Why this choice over alternatives]
+Return ONLY valid JSON in this exact format:
+{{
+    "content_opportunity_score": score_1_to_10,
+    "recommended_content_type": "News Commentary|Project Showcase|Thought Leadership|Tutorial|None Today",
+    "primary_topic_focus": "specific topic to focus on",
+    "posting_urgency": "Post Today|This Week|Save for Later",
+    "content_angle": "What unique perspective to take",
+    "reasoning": "Why this choice over alternatives",
+    "audience_engagement_considerations": "engagement patterns analysis",
+    "topic_freshness_score": score_1_to_10,
+    "content_variety_balance": "how this fits with recent posts"
+}}
 
 Consider: Audience engagement patterns, topic freshness, content variety, posting frequency."""
+
 
 def posting_timing_optimizer(content_type, topic, audience_segments, timezone, current_time, recent_post_times):
     """Determines optimal posting time for LinkedIn content"""
@@ -97,12 +116,32 @@ User Timezone: {timezone}
 Current Time: {current_time}
 Recent Posting History: {recent_post_times}
 
-Analysis needed:
-- Optimal Posting Time: [Specific time recommendation]
-- Reasoning: [Why this timing works for the audience]
-- Alternative Times: [2-3 backup options]
-- Posting Frequency Check: [Is this too soon after last post?]
-- Weekend vs Weekday Strategy: [Day-specific considerations]
+Return ONLY valid JSON in this exact format:
+{{
+    "optimal_posting_time": {{
+        "recommended_datetime": "specific time recommendation",
+        "reasoning": "Why this timing works for the audience"
+    }},
+    "alternative_times": [
+        {{
+            "datetime": "alternative time 1",
+            "effectiveness_score": score_1_to_10
+        }},
+        {{
+            "datetime": "alternative time 2", 
+            "effectiveness_score": score_1_to_10
+        }}
+    ],
+    "posting_frequency_check": {{
+        "too_soon": true_or_false,
+        "optimal_gap": "recommended time since last post",
+        "frequency_analysis": "current posting pattern analysis"
+    }},
+    "day_strategy": {{
+        "weekend_vs_weekday": "day-specific considerations",
+        "audience_schedule_alignment": "professional audience timing factors"
+    }}
+}}
 
 Consider: Professional audience schedules, content type engagement patterns, time zone optimization."""
 
@@ -117,21 +156,25 @@ Target Audience: {audience}
 Post Angle: {content_angle}
 Key Points to Cover: {key_insights}
 
-LinkedIn Post Requirements:
-- Hook: Engaging first line that stops scrolling
-- Length: 150-300 words (optimal for LinkedIn algorithm)
-- Tone: Professional but conversational, matching user's voice
-- Structure: Short paragraphs, easy scanning
-- Call-to-Action: Encourage meaningful engagement
-- Hashtags: 3-5 relevant hashtags (not excessive)
-- Personal Touch: Connect to user's experience or perspective
+Return ONLY valid JSON in this exact format:
+{{
+    "post_content": "complete LinkedIn post text (150-300 words)",
+    "post_structure": {{
+        "hook": "engaging first line that stops scrolling",
+        "body": "main content with short paragraphs",
+        "call_to_action": "question or discussion prompt"
+    }},
+    "tone_analysis": "professional but conversational voice",
+    "hashtags": ["hashtag1", "hashtag2", "hashtag3"],
+    "personal_touch": "how this connects to user's experience",
+    "engagement_optimization": {{
+        "question_included": true_or_false,
+        "personal_experience_shared": true_or_false,
+        "technical_insights_provided": true_or_false
+    }}
+}}
 
-Writing Style Guidelines:
-- Start with a compelling statement or question
-- Use "I" statements and personal experiences when appropriate  
-- Include technical insights without being overly jargony
-- End with a question or discussion prompt
-- No excessive emojis or corporate speak"""
+Requirements: Hook that stops scrolling, 150-300 words, professional but conversational tone, short paragraphs, personal connection, 3-5 hashtags, meaningful engagement prompt."""
 
 def post_variation_generator(original_concept, audience, voice_sample):
     """Creates multiple versions of LinkedIn post concept"""
@@ -141,17 +184,34 @@ Base Content: {original_concept}
 Target Audience: {audience}
 User Voice: {voice_sample}
 
-Generate:
-Version A - News Commentary: Focus on industry analysis and implications
-Version B - Personal Experience: Connect to user's projects and learnings  
-Version C - Community Discussion: Emphasize questions and engagement
+Return ONLY valid JSON in this exact format:
+{{
+    "variations": {{
+        "version_a_news_commentary": {{
+            "focus": "industry analysis and implications",
+            "content": "complete post focusing on news commentary (150-300 words)",
+            "engagement_style": "analytical discussion"
+        }},
+        "version_b_personal_experience": {{
+            "focus": "connect to user's projects and learnings",
+            "content": "complete post with personal connection (150-300 words)",
+            "engagement_style": "experience sharing"
+        }},
+        "version_c_community_discussion": {{
+            "focus": "emphasize questions and engagement",
+            "content": "complete post focused on community discussion (150-300 words)",
+            "engagement_style": "question-driven"
+        }}
+    }},
+    "common_elements": {{
+        "core_message": "shared message across all versions",
+        "user_voice_consistency": "how all maintain authentic voice",
+        "target_length": "150-300 words for each"
+    }}
+}}
 
-Each version should:
-- Maintain the core message
-- Use different hooks and structures
-- Appeal to different engagement styles
-- Stay true to the user's authentic voice
-- Be 150-300 words"""
+Each version should maintain the core message, use different hooks and structures, appeal to different engagement styles, and stay true to the user's authentic voice."""
+
 
 def content_reviewer(post_draft, brand_voice, audience, topic):
     """Reviews LinkedIn content for quality and professional standards"""
@@ -162,21 +222,44 @@ User Brand Guidelines: {brand_voice}
 Target Audience: {audience}
 Content Topic: {topic}
 
-Quality Assessment:
-- Brand Alignment (1-10): [Does this match the user's professional image?]
-- Engagement Potential (1-10): [Likely to generate meaningful comments/shares?]
-- Technical Accuracy: [Any factual errors or questionable claims?]
-- Tone Appropriateness: [Professional yet authentic?]
-- LinkedIn Optimization: [Hook strength, length, readability?]
-- Improvement Suggestions: [Specific recommendations]
-- Approval Status: [Approve/Revise/Reject with reasoning]
+Return ONLY valid JSON in this exact format:
+{{
+    "quality_assessment": {{
+        "brand_alignment": {{
+            "score": score_1_to_10,
+            "analysis": "Does this match the user's professional image?"
+        }},
+        "engagement_potential": {{
+            "score": score_1_to_10,
+            "analysis": "Likely to generate meaningful comments/shares?"
+        }},
+        "technical_accuracy": {{
+            "status": "accurate|needs_verification|contains_errors",
+            "notes": "Any factual errors or questionable claims?"
+        }},
+        "tone_appropriateness": {{
+            "status": "appropriate|needs_adjustment",
+            "analysis": "Professional yet authentic?"
+        }},
+        "linkedin_optimization": {{
+            "hook_strength": score_1_to_10,
+            "length_optimal": true_or_false,
+            "readability": score_1_to_10
+        }}
+    }},
+    "improvement_suggestions": ["specific recommendation 1", "specific recommendation 2"],
+    "approval_status": "Approve|Revise|Reject",
+    "reasoning": "detailed explanation for approval status",
+    "red_flags": {{
+        "promotional_language": true_or_false,
+        "controversial_statements": true_or_false,
+        "technical_inaccuracies": true_or_false,
+        "off_brand_voice": true_or_false,
+        "grammar_formatting_issues": true_or_false
+    }}
+}}
 
-Red Flags to Check:
-- Overly promotional or salesy language
-- Controversial statements without context
-- Technical inaccuracies
-- Off-brand voice or tone
-- Poor grammar or formatting"""
+Check for: Overly promotional language, controversial statements without context, technical inaccuracies, off-brand voice, poor grammar or formatting."""
 
 def engagement_predictor(post_text, past_engagement_data, content_category, scheduled_time, trending_topics):
     """Predicts engagement potential for LinkedIn posts"""
@@ -188,16 +271,39 @@ Topic Category: {content_category}
 Posting Time: {scheduled_time}
 Current Industry Trends: {trending_topics}
 
-Engagement Prediction:
-- Expected Likes: [Range estimate]
-- Expected Comments: [Range estimate]
-- Expected Shares: [Range estimate]
-- Viral Potential: [Low/Medium/High]
-- Best Performing Elements: [What makes this engaging?]
-- Risk Factors: [What might limit engagement?]
-- Optimization Suggestions: [How to improve performance]
+Return ONLY valid JSON in this exact format:
+{{
+    "engagement_predictions": {{
+        "expected_likes": {{
+            "range_min": number,
+            "range_max": number,
+            "confidence": "high|medium|low"
+        }},
+        "expected_comments": {{
+            "range_min": number,
+            "range_max": number,
+            "confidence": "high|medium|low"
+        }},
+        "expected_shares": {{
+            "range_min": number,
+            "range_max": number,
+            "confidence": "high|medium|low"
+        }},
+        "viral_potential": "Low|Medium|High"
+    }},
+    "performance_factors": {{
+        "best_performing_elements": ["element 1", "element 2"],
+        "risk_factors": ["risk 1", "risk 2"],
+        "optimization_suggestions": ["suggestion 1", "suggestion 2"]
+    }},
+    "historical_comparison": {{
+        "vs_user_average": "above|average|below",
+        "similar_content_performance": "better|similar|worse"
+    }}
+}}
 
 Base prediction on: Content quality, topic relevance, timing, historical patterns."""
+
 
 def repo_significance_analyzer(repo_name, commit_messages, diff_summary, repo_description, repo_content_summary, tech_stack):
     """Analyzes repository changes for LinkedIn content potential"""
@@ -252,14 +358,29 @@ Audience Response: {comment_themes}
 Posting Details: {posting_details}
 Historical Context: {comparison_data}
 
-Performance Analysis:
-- Success Factors: [What worked well?]
-- Underperforming Elements: [What could be improved?]
-- Audience Insights: [What does engagement reveal about followers?]
-- Content Lessons: [Key takeaways for future posts]
-- Strategy Adjustments: [How should future content change?]
-- Topic Performance: [How did this topic perform vs others?]
-- Timing Insights: [Was posting time optimal?]
+Return ONLY valid JSON in this exact format:
+{{
+    "performance_summary": {{
+        "overall_success_level": "excellent|good|average|poor",
+        "exceeded_expectations": true_or_false
+    }},
+    "success_factors": ["what worked well 1", "what worked well 2"],
+    "underperforming_elements": ["what could be improved 1", "what could be improved 2"],
+    "audience_insights": {{
+        "engagement_quality": "meaningful professional discussions vs surface engagement",
+        "follower_behavior_patterns": "what the engagement reveals about followers"
+    }},
+    "content_lessons": ["key takeaway 1", "key takeaway 2"],
+    "strategy_adjustments": ["how future content should change 1", "how future content should change 2"],
+    "topic_performance": {{
+        "vs_other_topics": "better|similar|worse",
+        "topic_specific_insights": "how this topic performed"
+    }},
+    "timing_insights": {{
+        "posting_time_effectiveness": "optimal|suboptimal",
+        "timing_recommendations": "future timing suggestions"
+    }}
+}}
 
 Generate actionable insights for improving content strategy and audience engagement."""
 
