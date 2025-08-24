@@ -18,39 +18,10 @@ import os
 import json, re
 import time
 import traceback
+import random
+from openai import RateLimitError
 
 load_dotenv()
-
-class news_entry_structure(BaseModel):
-    title: str
-    article_url: str
-    source: str
-    publication_date: str
-    summary: str
-    author: str
-    main_topic: str
-    technologies: List[str]
-    content: str
-
-class news_refined_structure(BaseModel):
-    title: str
-    url: str
-    source: str
-    published_date: datetime
-    scraped_date: datetime
-    summary: str
-    key_points: List[str]
-    relevance_score: int  # 1-10
-    content_category: List[str]
-    technical_depth: str
-    post_angle: str
-    target_audience: List[str]
-    engagement_potential: str
-    related_technologies: List[str]
-    industry_impact: str
-    trending_potential: bool
-    personal_connection: str
-    status: str = "Refined"
     
 
 class AgentState(TypedDict):
@@ -60,7 +31,102 @@ class AgentState(TypedDict):
     analyzed_articles: List[dict]
     github_data: List[dict] 
     analyzed_content: List[dict]
+    linkedin_posts: List[dict]
 
+def robust_json_parse(response_text):
+    """Robustly parse JSON from LLM response, handling various formats"""
+    if not response_text:
+        return None
+    
+    # Method 1: Direct parsing
+    try:
+        return json.loads(response_text.strip())
+    except json.JSONDecodeError:
+        pass
+    
+    # Method 2: Remove markdown code blocks
+    try:
+        clean_text = re.sub(r'```[a-zA-Z]*\n?', '', response_text)
+        clean_text = re.sub(r'\n```', '', clean_text)
+        return json.loads(clean_text.strip())
+    except json.JSONDecodeError:
+        pass
+    
+    # Method 3: Find JSON object/array in text
+    try:
+        # Find JSON object
+        start_obj = response_text.find('{')
+        if start_obj >= 0:
+            brace_count = 0
+            for i, char in enumerate(response_text[start_obj:], start_obj):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_text = response_text[start_obj:i+1]
+                        return json.loads(json_text)
+        
+        # Find JSON array
+        start_arr = response_text.find('[')
+        if start_arr >= 0:
+            bracket_count = 0
+            for i, char in enumerate(response_text[start_arr:], start_arr):
+                if char == '[':
+                    bracket_count += 1
+                elif char == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        json_text = response_text[start_arr:i+1]
+                        return json.loads(json_text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Method 4: Try to extract JSON between first { and last }
+    try:
+        first_brace = response_text.find('{')
+        last_brace = response_text.rfind('}')
+        if first_brace >= 0 and last_brace > first_brace:
+            json_text = response_text[first_brace:last_brace+1]
+            return json.loads(json_text)
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+def safe_llm_call(messages, max_retries=3, base_delay=2):
+    """Safely call LLM with rate limiting handling and retries"""
+    for attempt in range(max_retries):
+        try:
+            response = llm.invoke(messages)
+            return response
+        
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # Handle rate limiting
+            if "429" in error_str or "rate" in error_str:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
+                    print(f"⚠️ Rate limited, waiting {delay:.1f}s before retry {attempt + 2}/{max_retries}...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"❌ Max retries reached due to rate limiting")
+                    raise e
+            
+            # Handle other errors
+            else:
+                if attempt < max_retries - 1:
+                    delay = base_delay + random.uniform(0.5, 1.5)
+                    print(f"⚠️ LLM error, retrying in {delay:.1f}s... ({attempt + 2}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"❌ Max retries reached due to: {e}")
+                    raise e
+    
+    raise Exception("Failed after all retries")
 
 
 @tool
@@ -262,13 +328,13 @@ def analyze_github_repos(state: AgentState) -> AgentState:
 
 # Initialize LLM
 try:
-    llm = ChatOpenAI(
-        model="deepseek/deepseek-r1-0528:free",  # OpenRouter DeepSeek model name
-        openai_api_key=os.getenv("OPENROUTER_API_KEY"),  # Your OpenRouter API key
-        openai_api_base="https://openrouter.ai/api/v1",  # OpenRouter base URL
-        temperature=0.3
-    )
-    # llm = ChatDeepSeek(model="deepseek-chat")
+    # llm = ChatOpenAI(
+    #     model="deepseek/deepseek-r1-0528:free",  # OpenRouter DeepSeek model name
+    #     openai_api_key=os.getenv("OPENROUTER_API_KEY"),  # Your OpenRouter API key
+    #     openai_api_base="https://openrouter.ai/api/v1",  # OpenRouter base URL
+    #     temperature=0.3
+    # )
+    llm = ChatDeepSeek(model="deepseek-chat")
 except Exception as e:
     print(f"Error initializing LLM: {e}")
     exit(1)
@@ -424,12 +490,12 @@ def extract_structured_news(state: AgentState) -> AgentState:
         }
     
 def analyze_relevance(state: AgentState) -> AgentState:
-    """"Node 3: This node analyze the relavance of each article"""
-    extracted_article =  state.get("extracted_articles", [])
-    updated_article= []
-    print(f"RELEVANCE NODE: Got {len(extracted_article)} articles to analyze")
+    """Node 3: This node analyzes the relevance of each article"""
+    extracted_articles = state.get("extracted_articles", [])
+    updated_articles = []
+    print(f"🎯 RELEVANCE NODE: Got {len(extracted_articles)} articles to analyze")
 
-    if not extracted_article:
+    if not extracted_articles:
         return {
             "analyzed_articles": [],
             "messages": state.get("messages", []) + [
@@ -437,155 +503,200 @@ def analyze_relevance(state: AgentState) -> AgentState:
             ]
         }
 
-    for article in extracted_article:
-        system_prompt = news_relevance_score(
-            article=article,
-            user_expertise=["software development", "Ai/Ml", "Python development", "Ai agent", "Javascript/React", "Next js", "Web development", "Saas Apps"],
-            target_audience=["Junior/Mid-level developers", "Startup Founders", "Freelance developers", "Tech leads"]
-        )
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content="Please analyze the relevance of each article based on the user expertise and target audience.")
-        ]
-
+    for i, article in enumerate(extracted_articles, 1):
+        print(f"🔄 [{i}/{len(extracted_articles)}] Analyzing relevance...")
+        
         try:
-            response = llm.invoke(messages)
+            system_prompt = news_relevance_score(
+                article=article,
+                user_expertise=["software development", "AI/ML", "Python development", "AI agent", "Javascript/React", "Next js", "Web development", "SaaS Apps"],
+                target_audience=["Junior/Mid-level developers", "Startup Founders", "Freelance developers", "Tech leads"]
+            )
 
-            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
-            parsed = json.loads(clean_content)
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Please analyze the relevance of this article and return ONLY valid JSON.")
+            ]
+
+            # Use safe LLM call with retries
+            response = safe_llm_call(messages)
+            
+            # Use robust JSON parsing
+            parsed = robust_json_parse(response.content)
+            
+            if not parsed:
+                print(f"⚠️ Failed to parse JSON, skipping article {i}")
+                continue
 
             if isinstance(parsed, dict):
                 analysis = parsed
             elif isinstance(parsed, list) and parsed:
                 analysis = parsed[0]
             else:
-                raise ValueError(f"Unexpected JSON structure: {parsed}")
-
-
+                print(f"⚠️ Unexpected JSON structure, skipping article {i}")
+                continue
 
             article_copy = article.copy()
             article_copy.update({"relevance_analysis": analysis})
-            updated_article.append(article_copy)
+            updated_articles.append(article_copy)
+            
+            print(f"✅ Article {i} relevance analyzed successfully")
+            
+            # Small delay to avoid hitting rate limits
+            time.sleep(0.5)
 
         except Exception as e:
-            print(f"Skipping article due to error {e}")
+            print(f"❌ Skipping article {i} due to error: {e}")
             continue
 
+    print(f"🎉 Relevance analysis completed: {len(updated_articles)}/{len(extracted_articles)} articles")
+    
     return {
-        "analyzed_articles": updated_article,
+        "analyzed_articles": updated_articles,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully analyzed {len(updated_article)} articles")
+            SystemMessage(content=f"Successfully analyzed {len(updated_articles)} articles for relevance")
         ]
     }
 
 def categorize_articles(state: AgentState) -> AgentState:
-    """Node 4: Categorize each article based on it's content"""
+    """Node 4: Categorize each article based on its content"""
     articles = state.get("analyzed_articles", [])
-    updated_article = []
-    print(f"CATEGORIZER NODE: Got {len(articles)} articles to analyze")
+    updated_articles = []
+    print(f"🏷️ CATEGORIZER NODE: Got {len(articles)} articles to categorize")
 
     if not articles:
         return {
+            "analyzed_articles": [],
             "messages": state.get("messages", []) + [
                 SystemMessage(content="No articles to categorize")
             ]
         }
 
-    for article in articles:
-        system_prompt = article_categorizer(
-            title=article["title"],
-            content=article["content"],
-            source=article["article_url"]
-        )
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content="Please categorize the article based on it's content.")
-        ]
-
+    for i, article in enumerate(articles, 1):
+        print(f"🔄 [{i}/{len(articles)}] Categorizing article...")
+        
         try:
-            response = llm.invoke(messages)
+            system_prompt = article_categorizer(
+                title=article["title"],
+                content=article["content"],
+                source=article["article_url"]
+            )
 
-            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
-            parsed = json.loads(clean_content)
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Please categorize this article and return ONLY valid JSON.")
+            ]
+
+            # Use safe LLM call with retries
+            response = safe_llm_call(messages)
+            
+            # Use robust JSON parsing
+            parsed = robust_json_parse(response.content)
+            
+            if not parsed:
+                print(f"⚠️ Failed to parse JSON, skipping article {i}")
+                continue
 
             if isinstance(parsed, dict):
                 category = parsed
             elif isinstance(parsed, list) and parsed:
                 category = parsed[0]
             else:
-                raise ValueError(f"Unexpected JSON structure: {parsed}")
-
+                print(f"⚠️ Unexpected JSON structure, skipping article {i}")
+                continue
 
             article_copy = article.copy()
             article_copy.update({"category": category})
-            updated_article.append(article_copy)
+            updated_articles.append(article_copy)
+            
+            print(f"✅ Article {i} categorized successfully")
+            
+            # Small delay to avoid hitting rate limits
+            time.sleep(0.5)
 
         except Exception as e:
-            print(f"Skipping article due to error {e}")
+            print(f"❌ Skipping article {i} due to error: {e}")
             continue
+
+    print(f"🎉 Categorization completed: {len(updated_articles)}/{len(articles)} articles")
+    
     return {
-        "analyzed_articles": updated_article,
+        "analyzed_articles": updated_articles,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully categorized {len(updated_article)} articles")
+            SystemMessage(content=f"Successfully categorized {len(updated_articles)} articles")
         ]
     }
 
 def summarize_content(state: AgentState) -> AgentState:
-    """Node 5: Sumazize the content of each article"""
+    """Node 5: Summarize the content of each article"""
     articles = state.get("analyzed_articles", [])
-    updated_article = []
-    print(f"SUMMARIZER NODE: Got {len(articles)} articles to analyze")
+    updated_articles = []
+    print(f"📝 SUMMARIZER NODE: Got {len(articles)} articles to summarize")
 
     if not articles:
         return {
+            "analyzed_articles": [],
             "messages": state.get("messages", []) + [
                 SystemMessage(content="No articles to summarize")
             ]
         }
 
-    for article in articles:
-        system_prompt = news_summarizer(
-            article=article,
-            source=article["article_url"],
-        )
-
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content="Summarize the article based on it's content")
-        ]
-
+    for i, article in enumerate(articles, 1):
+        print(f"🔄 [{i}/{len(articles)}] Summarizing article...")
+        
         try:
-            response = llm.invoke(messages)
+            system_prompt = news_summarizer(
+                article=article,
+                source=article["article_url"],
+            )
 
-            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
-            parsed = json.loads(clean_content)
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Summarize this article and return ONLY valid JSON.")
+            ]
+
+            # Use safe LLM call with retries
+            response = safe_llm_call(messages)
+            
+            # Use robust JSON parsing
+            parsed = robust_json_parse(response.content)
+            
+            if not parsed:
+                print(f"⚠️ Failed to parse JSON, skipping article {i}")
+                continue
 
             if isinstance(parsed, dict):
                 analysis = parsed
             elif isinstance(parsed, list) and parsed:
                 analysis = parsed[0]
             else:
-                raise ValueError(f"Unexpected JSON structure: {parsed}")
+                print(f"⚠️ Unexpected JSON structure, skipping article {i}")
+                continue
 
             article_copy = article.copy()
             article_copy.update({"summary": analysis})
-            updated_article.append(article_copy)
+            updated_articles.append(article_copy)
+            
+            print(f"✅ Article {i} summarized successfully")
+            
+            # Small delay to avoid hitting rate limits
+            time.sleep(0.5)
+            
         except Exception as e:
-            print(f"Skipping article due to error {e}")
+            print(f"❌ Skipping article {i} due to error: {e}")
             continue
     
+    print(f"🎉 Summarization completed: {len(updated_articles)}/{len(articles)} articles")
     
     return {
-        "analyzed_articles": updated_article,
+        "analyzed_articles": updated_articles,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully summarized {len(updated_article)} articles")
+            SystemMessage(content=f"Successfully summarized {len(updated_articles)} articles")
         ]
     }
 
 def save_news_to_notion(state: AgentState) -> AgentState:
-    """Node 6: Save analyzed articles to Notion database"""
+    """Node 6: Save analyzed articles to Notion database - FIXED VERSION"""
     print("💾 STEP 6: Saving articles to Notion database...")
     articles = state.get("analyzed_articles", [])
     
@@ -607,6 +718,15 @@ def save_news_to_notion(state: AgentState) -> AgentState:
     def clean_multi_select(items):
         """Clean and split items safely for Notion multi_select"""
         clean = []
+        if not items:
+            return clean
+            
+        # Handle different input types
+        if isinstance(items, str):
+            items = [items]
+        elif not isinstance(items, list):
+            items = [str(items)]
+            
         for item in items:
             if not item:
                 continue
@@ -639,23 +759,17 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                 summary_data = article.get("summary", {})
                 
                 # Extract relevance score safely
-                relevance_score = None
+                relevance_score = 5  # default
                 if isinstance(relevance_analysis, dict):
-                    relevance_score = relevance_analysis.get("relevance_score", 0)
-                elif isinstance(relevance_analysis, str):
-                    # Extract score from text if it's still a string
-                    import re
-                    match = re.search(r"(?:relevance_score|score).*?(\d+)", relevance_analysis.lower())
-                    if match:
-                        relevance_score = int(match.group(1))
+                    relevance_score = relevance_analysis.get("relevance_score", 5)
                 
-                # Build properties safely
+                # Build properties safely - MATCHING YOUR ACTUAL DATABASE FIELDS
                 properties = {
                     "Title": {
                         "title": [{"text": {"content": safe_text(article.get("title"), "Untitled")}}]
                     },
                     "URL": {
-                        "url": article.get("article_url", "") or ""
+                        "url": article.get("article_url", "") if article.get("article_url", "").startswith("http") else ""
                     },
                     "Source": {
                         "rich_text": [{"text": {"content": safe_text(article.get("source"))}}]
@@ -664,13 +778,13 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                         "rich_text": [{"text": {"content": safe_text(article.get("author"))}}]
                     },
                     "Summary": {
-                        "rich_text": [{"text": {"content": safe_text(article.get("summary"), "")[:1900]}}]
+                        "rich_text": [{"text": {"content": safe_text(article.get("content", ""), "")[:1900]}}]  # Use content as summary
                     },
                     "Content": {
                         "rich_text": [{"text": {"content": safe_text(article.get("content"), "")[:1900]}}]
                     },
                     "Main Topic": {
-                        "rich_text": [{"text": {"content": safe_text(article.get("main_topic"))}}]
+                        "rich_text": [{"text": {"content": safe_text(article.get("main_topic", "Technology"))}}]
                     },
                     "Status": {
                         "status": {"name": "Analyzed"}
@@ -680,16 +794,27 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                     },
                     "Scraped Date": {
                         "date": {"start": datetime.now().date().isoformat()}
+                    },
+                    "Relevance Score": {
+                        "number": int(relevance_score)
                     }
                 }
                 
-                # Handle relevance score
-                if relevance_score is not None:
-                    properties["Relevance Score"] = {
-                        "number": int(relevance_score)
-                    }
+                # Handle publication date safely
+                pub_date = article.get("publication_date")
+                if pub_date and str(pub_date).strip():
+                    try:
+                        date_str = str(pub_date).strip()
+                        if 'T' in date_str:
+                            date_str = date_str.split('T')[0]
+                        if len(date_str) >= 10:  # Basic validation YYYY-MM-DD
+                            properties["Published Date"] = {
+                                "date": {"start": date_str}
+                            }
+                    except Exception as date_error:
+                        print(f"⚠️ Date parsing failed for {pub_date}: {date_error}")
                 
-                # Handle relevance analysis data
+                # Handle relevance analysis data safely
                 if isinstance(relevance_analysis, dict):
                     # Content Category
                     content_category = relevance_analysis.get("content_category")
@@ -719,7 +844,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                             "rich_text": [{"text": {"content": safe_text(audience_appeal)[:1900]}}]
                         }
                     
-                    # Key Insights
+                    # Key Insights - CHANGED FROM "Key Insights" 
                     key_insights = relevance_analysis.get("key_insights", [])
                     if key_insights and isinstance(key_insights, list):
                         insights_text = "; ".join([str(insight) for insight in key_insights])
@@ -774,12 +899,12 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                                     "multi_select": [{"name": lang} for lang in clean_langs]
                                 }
                         
-                        # Frameworks/Libraries
+                        # Frameworks/Libraries - NOTE THE SPACE IN YOUR DB
                         frameworks = applicable_categories.get("frameworks_libraries", [])
                         if frameworks:
                             clean_frameworks = clean_multi_select(frameworks)
                             if clean_frameworks:
-                                properties["Frameworks Libraries"] = {
+                                properties["Frameworks Libraries"] = {  # Note: no slash, just space
                                     "multi_select": [{"name": framework} for framework in clean_frameworks]
                                 }
                         
@@ -801,25 +926,17 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                                     "multi_select": [{"name": practice} for practice in clean_practices]
                                 }
                         
-                        # Tools/Platforms
+                        # Tools/Platforms - NOTE THE SPACE IN YOUR DB
                         tools = applicable_categories.get("tools_platforms", [])
                         if tools:
                             clean_tools = clean_multi_select(tools)
                             if clean_tools:
-                                properties["Tools Platforms"] = {
+                                properties["Tools Platforms"] = {  # Note: no slash, just space
                                     "multi_select": [{"name": tool} for tool in clean_tools]
                                 }
                 
-                # Handle summary data
+                # Handle summary data - REMOVE THE PROBLEMATIC FIELDS FOR NOW
                 if isinstance(summary_data, dict):
-                    # Key Points
-                    key_points = summary_data.get("key_points", [])
-                    if key_points and isinstance(key_points, list):
-                        points_text = "; ".join([str(point) for point in key_points])
-                        properties["Key Points"] = {
-                            "rich_text": [{"text": {"content": safe_text(points_text)[:1900]}}]
-                        }
-                    
                     # Technical Details
                     tech_details = summary_data.get("technical_details", [])
                     if tech_details:
@@ -828,21 +945,6 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                             properties["Technical Details"] = {
                                 "multi_select": [{"name": tech} for tech in clean_tech]
                             }
-                    
-                    # Industry Impact
-                    industry_impact = summary_data.get("industry_impact")
-                    if industry_impact:
-                        properties["Industry Impact"] = {
-                            "rich_text": [{"text": {"content": safe_text(industry_impact)[:1900]}}]
-                        }
-                    
-                    # Personal Relevance Hooks
-                    hooks = summary_data.get("personal_relevance_hooks", [])
-                    if hooks and isinstance(hooks, list):
-                        hooks_text = "; ".join([str(hook) for hook in hooks])
-                        properties["Personal Relevance Hooks"] = {
-                            "rich_text": [{"text": {"content": safe_text(hooks_text)[:1900]}}]
-                        }
                     
                     # Related Technologies
                     related_tech = summary_data.get("related_technologies", [])
@@ -853,13 +955,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                                 "multi_select": [{"name": tech} for tech in clean_related]
                             }
                 
-                # Handle optional fields from original article
-                # Image URL
-                image_url = article.get("image_url")
-                if image_url and isinstance(image_url, str) and image_url.startswith("http"):
-                    properties["Image URL"] = {"url": image_url}
-                
-                # Technologies from original article
+                # Handle Technologies from original article
                 technologies = article.get("technologies", [])
                 if technologies and isinstance(technologies, list):
                     clean_techs = clean_multi_select(technologies)
@@ -868,19 +964,10 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                             "multi_select": [{"name": tech} for tech in clean_techs]
                         }
                 
-                # Publication Date
-                pub_date = article.get("publication_date")
-                if pub_date and str(pub_date).strip():
-                    try:
-                        date_str = str(pub_date).strip()
-                        if 'T' in date_str:
-                            date_str = date_str.split('T')[0]
-                        if len(date_str) >= 10:  # Basic validation
-                            properties["Published Date"] = {
-                                "date": {"start": date_str}
-                            }
-                    except Exception as date_error:
-                        print(f"⚠️ Date parsing failed for {pub_date}: {date_error}")
+                # Handle Image URL
+                image_url = article.get("image_url")
+                if image_url and isinstance(image_url, str) and image_url.startswith("http"):
+                    properties["Image URL"] = {"url": image_url}
                 
                 # Create the database entry
                 notion.pages.create(
@@ -893,8 +980,9 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                 
             except Exception as article_error:
                 print(f"❌ Failed to save article '{article.get('title', 'Unknown')}': {article_error}")
-                import traceback
-                traceback.print_exc()
+                # Don't print full traceback for cleaner output, but you can uncomment this for debugging:
+                # import traceback
+                # traceback.print_exc()
                 continue
         
         print(f"✅ Successfully saved {saved_count} of {len(articles)} articles to Notion!")
@@ -908,8 +996,6 @@ def save_news_to_notion(state: AgentState) -> AgentState:
         
     except Exception as e:
         print(f"❌ Notion saving failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return {
             "analyzed_articles": articles,
             "messages": state.get("messages", []) + [
@@ -1388,7 +1474,7 @@ def content_writer_agent(state: AgentState) -> AgentState:
     }
 
 def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
-    """Node: Save generated LinkedIn posts to Notion database"""
+    """Node: Save generated LinkedIn posts to Notion database - FIXED VERSION"""
     print("💾 STEP 10: Saving LinkedIn posts to Notion database...")
     linkedin_posts = state.get("linkedin_posts", [])
     
@@ -1411,6 +1497,23 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
         # Truncate if too long for Notion
         return text_str[:max_length] if len(text_str) > max_length else text_str
     
+    def safe_select_text(text_value, default="General", max_length=100):
+        """Safely convert text for Notion select field (no commas, limited length)"""
+        if text_value is None:
+            return default
+        
+        text_str = str(text_value).strip()
+        if not text_str:
+            return default
+            
+        # Remove commas and other problematic characters for select fields
+        clean_text = text_str.replace(",", " -").replace("\n", " ").replace("\r", " ")
+        
+        # Truncate and clean up multiple spaces
+        clean_text = " ".join(clean_text.split())
+        
+        return clean_text[:max_length] if len(clean_text) > max_length else clean_text
+    
     def clean_multi_select(items, max_items=10):
         """Clean and prepare items for Notion multi_select"""
         if not items or not isinstance(items, list):
@@ -1419,8 +1522,8 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
         clean_items = []
         for item in items[:max_items]:  # Limit to max_items
             if item and str(item).strip():
-                # Clean the item and truncate to 100 chars (Notion limit)
-                clean_item = str(item).strip()[:100]
+                # Clean the item and remove commas for multi-select
+                clean_item = str(item).strip().replace(",", " -")[:100]
                 if clean_item:
                     clean_items.append({"name": clean_item})
         return clean_items
@@ -1446,10 +1549,10 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
             try:
                 # Extract main data
                 source_title = safe_text(post.get("source_title", "Unknown"))
-                content_type = safe_text(post.get("content_type", "unknown"))
+                content_type = safe_select_text(post.get("content_type", "unknown"))
                 strategic_reasoning = safe_text(post.get("strategic_reasoning", ""))
-                content_angle = safe_text(post.get("content_angle", ""))
-                recommended_content_type = safe_text(post.get("recommended_content_type", ""))
+                content_angle = safe_select_text(post.get("content_angle", "General"))
+                recommended_content_type = safe_select_text(post.get("recommended_content_type", "Commentary"))
                 
                 # Extract base post data
                 base_post = post.get("base_post", {})
@@ -1505,7 +1608,7 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
                         "rich_text": [{"text": {"content": post_content}}]
                     },
                     "Content Type": {
-                        "select": {"name": content_type[:100]}
+                        "select": {"name": content_type}
                     },
                     "Source Title": {
                         "rich_text": [{"text": {"content": source_title}}]
@@ -1514,10 +1617,10 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
                         "rich_text": [{"text": {"content": strategic_reasoning}}]
                     },
                     "Content Angle": {
-                        "select": {"name": content_angle[:100] if content_angle else "General"}
+                        "select": {"name": content_angle}
                     },
                     "Recommended Content Type": {
-                        "select": {"name": recommended_content_type[:100] if recommended_content_type else "Commentary"}
+                        "select": {"name": recommended_content_type}
                     },
                     "Post Status": {
                         "status": {"name": "Generated"}
@@ -1596,8 +1699,9 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
                 
             except Exception as post_error:
                 print(f"❌ Failed to save LinkedIn post '{post.get('source_title', 'Unknown')}': {post_error}")
-                import traceback
-                traceback.print_exc()
+                # Uncomment for debugging:
+                # import traceback
+                # traceback.print_exc()
                 continue
         
         print(f"🎉 Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion!")
@@ -1619,7 +1723,7 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
                 SystemMessage(content=f"Error saving LinkedIn posts to Notion: {str(e)}")
             ]
         }
-
+        
 
 # Build the graph
 graph = StateGraph(AgentState)
@@ -1643,9 +1747,14 @@ graph.add_edge(START, "scraper")
 graph.add_edge("scraper", "extractor") 
 graph.add_edge("extractor", "relevance_analyst")
 graph.add_edge("relevance_analyst", "categorizer")
-graph.add_edge("categorizer", "summarizer")  # ← THIS WAS MISSING!
+graph.add_edge("categorizer", "summarizer")
 graph.add_edge("summarizer", "notion_news_saver")
-graph.add_edge("notion_news_saver", END)
+graph.add_edge("notion_news_saver", "github_analyzer")
+graph.add_edge("github_analyzer", "notion_github_saver")
+graph.add_edge("notion_github_saver", "content_strategist")
+graph.add_edge("content_strategist", "content_writer")
+graph.add_edge("content_writer", "linkedin_posts_saver")
+graph.add_edge("linkedin_posts_saver", END)     
 
 # to test the github analyzer alone
 # graph.add_edge(START, "github_analyzer")
@@ -1658,9 +1767,9 @@ app = graph.compile()
 # Enhanced run function with better progress indicators
 
 def run_news_analysis():
-    """Run the complete news analysis pipeline with detailed debugging"""
-    print("🚀 Starting LinkedIn Content Analysis Pipeline...")
-    print("=" * 50)
+    """Run the complete LinkedIn content pipeline with post generation and saving"""
+    print("🚀 Starting Complete LinkedIn Content Pipeline...")
+    print("=" * 60)
     
     initial_state = {
         "messages": [],
@@ -1668,31 +1777,33 @@ def run_news_analysis():
         "extracted_articles": [],
         "analyzed_articles": [],
         "github_data": [],
+        "analyzed_content": [],
+        "linkedin_posts": []
     }
     
     try:
         result = app.invoke(initial_state)
         
-        print("\n" + "=" * 50)
-        print("✅ PIPELINE COMPLETED SUCCESSFULLY!")
-        print("=" * 50)
+        print("\n" + "=" * 60)
+        print("✅ COMPLETE PIPELINE FINISHED SUCCESSFULLY!")
+        print("=" * 60)
         print(f"📊 Total Messages: {len(result['messages'])}")
-        print(f"📰 Repos Processed: {len(result.get('github_data', []))}")
+        print(f"📰 Articles Processed: {len(result.get('analyzed_articles', []))}")
+        print(f"🔄 Repos Processed: {len(result.get('github_data', []))}")
+        print(f"🎯 Strategic Content Items: {len(result.get('analyzed_content', []))}")
+        print(f"✍️ LinkedIn Posts Generated: {len(result.get('linkedin_posts', []))}")
+        print(f"💾 Posts Saved to Notion: Check your LinkedIn Posts database!")
         
-        # Show complete JSON content for debugging
-        # for i, repo in enumerate(result.get('github_data', []), 1):
-        #     print(f"\n" + "="*60)
-        #     print(f"📄 REPO {i} - COMPLETE JSON:")
-        #     print("="*60)
-            
-            # try:
-            #     formatted_json = json.dumps(repo, indent=2, ensure_ascii=False)
-            #     print(formatted_json)
-            # except Exception as e:
-            #     print(f"JSON formatting error: {e}")
-            #     print("Raw repo data:", repo)
-            
-            # print("="*60)
+        # Show final summary
+        linkedin_posts = result.get('linkedin_posts', [])
+        if linkedin_posts:
+            print(f"\n📝 FINAL LINKEDIN POSTS READY:")
+            for i, post in enumerate(linkedin_posts, 1):
+                print(f"   {i}. {post.get('source_title', 'Unknown')[:50]}...")
+                print(f"      🎯 Strategy: {post.get('recommended_content_type')}")
+                print(f"      📊 Quality Score: {post.get('strategy_analysis', {}).get('content_opportunity_score', 'N/A')}")
+        
+        print(f"\n🎉 Go check your Notion LinkedIn Posts database!")
         
         return result
         
