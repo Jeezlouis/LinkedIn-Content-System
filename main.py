@@ -1116,33 +1116,84 @@ def save_repo_to_notion(state: AgentState) -> AgentState:
 
 
 def post_content_strategist(state: AgentState) -> AgentState:
-    """Node 8: This is the agent that generates strategic content"""
+    """Node 8: This is the agent that generates strategic content recommendations"""
+    print("🧠 STEP 8: Content Strategist - Analyzing content opportunities...")
+    
     news_content = state.get("analyzed_articles", [])
     github_content = state.get("github_data", [])
+    analyzed_content = []
 
-    updated_content = []
-
-    if not news_content:
-        print("⚠️ No news content to analyze")
+    if not news_content and not github_content:
+        print("⚠️ No content to analyze for strategy")
         return {
+            "analyzed_content": [],
             "messages": state.get("messages", []) + [
-                SystemMessage(content="No news content to analyze")
+                SystemMessage(content="No content available for strategic analysis")
             ]
         }
 
-    if not github_content:
-        print("⚠️ No github content to analyze")
-        return {
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No github content to analyze")
-            ]
-        }
-    
+    # Process news articles for strategy
+    print(f"📰 Strategically analyzing {len(news_content)} news articles...")
     for news in news_content:
-        for github in github_content:
-
+        try:
             system_prompt = content_strategist(
                 news_articles=news,
+                repo_updates={},  # Empty for news-only analysis
+                past_post_metrics=0,
+                days_since_last_post=0,
+                recent_topics="I've never posted",
+                user_skills=["Python", "JavaScript / JSX", "TypeScript / TSX", "React.js", "Next.js", "Django",
+                "FastAPI", "LangChain", "LangGraph", "LLM Prompt Engineering", "Playwright", "Browser-use Framework", 
+                "Bright Data Proxy Integration","Firecrawl","PostgreSQL / MySQL","Notion API","REST API Design",
+                "Authentication Systems (Django-based)","Matplotlib","Git & GitHub","uv / Virtual Environments",
+                "Debugging & Logging","Docker Basics","Google Cloud AI Platform","Render"
+                ],
+                follower_demographics="My followers are mainly tech enthusiasts, developers, and AI/ML learners, with a mix of students, early professionals, and founders exploring the future of software and automation.",
+                personal_brand="Building at the intersection of AI, automation, and software development — sharing insights, projects, and tools that make tech more practical and accessible."
+            )
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Generate strategic content recommendations for this news article."),
+            ]
+
+            response = llm.invoke(messages)
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
+
+            if isinstance(parsed, dict):
+                strategy_analysis = parsed
+            elif isinstance(parsed, list) and parsed:
+                strategy_analysis = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
+
+            # Create strategic content item
+            strategic_item = news.copy()
+            strategic_item.update({
+                "content_type": "news_article",
+                "strategy_analysis": strategy_analysis,
+                "source_material": {
+                    "title": news.get("title", ""),
+                    "content": news.get("content", ""),
+                    "summary": news.get("summary", {}),
+                    "relevance_analysis": news.get("relevance_analysis", {})
+                }
+            })
+            analyzed_content.append(strategic_item)
+            
+            print(f"✅ Strategic analysis completed for: {news.get('title', 'Unknown')[:50]}...")
+
+        except Exception as e:
+            print(f"❌ Content Strategist failed for news article: {str(e)}")
+            continue
+
+    # Process GitHub repositories for strategy
+    print(f"🔄 Strategically analyzing {len(github_content)} GitHub repositories...")
+    for github in github_content:
+        try:
+            system_prompt = content_strategist(
+                news_articles={},  # Empty for repo-only analysis
                 repo_updates=github,
                 past_post_metrics=0,
                 days_since_last_post=0,
@@ -1159,106 +1210,415 @@ def post_content_strategist(state: AgentState) -> AgentState:
 
             messages = [
                 SystemMessage(content=system_prompt),
-                HumanMessage(content="Generate a strategic content for today's LinkedIn post."),
+                HumanMessage(content="Generate strategic content recommendations for this GitHub repository."),
             ]
 
-            try:
-                response = llm.invoke(messages)
+            response = llm.invoke(messages)
+            clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
+            parsed = json.loads(clean_content)
 
-                clean_content = re.sub(r"```(?:json)?|```", "", response.content).strip()
-                parsed = json.loads(clean_content)
+            if isinstance(parsed, dict):
+                strategy_analysis = parsed
+            elif isinstance(parsed, list) and parsed:
+                strategy_analysis = parsed[0]
+            else:
+                raise ValueError(f"Unexpected JSON structure: {parsed}")
 
-                if isinstance(parsed, dict):
-                    analysis = parsed
-                elif isinstance(parsed, list) and parsed:
-                    analysis = parsed[0]
-                else:
-                    raise ValueError(f"Unexpected JSON structure: {parsed}")
+            # Create strategic content item
+            strategic_item = github.copy()
+            strategic_item.update({
+                "content_type": "github_project",
+                "strategy_analysis": strategy_analysis,
+                "source_material": {
+                    "name": github.get("name", ""),
+                    "description": github.get("description", ""),
+                    "analysis": github.get("analysis", {}),
+                    "repo_url": github.get("repo_url", "")
+                }
+            })
+            analyzed_content.append(strategic_item)
+            
+            print(f"✅ Strategic analysis completed for repo: {github.get('name', 'Unknown')}")
 
-                news_content_copy = news.copy()
-                github_content_copy = github.copy() 
-                news_content_copy.update({"news_strategist_analysis": analysis})
-                github_content_copy.update({"github_strategist_analysis": analysis})
-                updated_content.append(news_content_copy)
-                updated_content.append(github_content_copy)
+        except Exception as e:
+            print(f"❌ Content Strategist failed for GitHub repo: {str(e)}")
+            continue
 
-            except Exception as e:
-                print(f"❌ Content Strategist failed: {str(e)}")
-                continue
+    print(f"🎯 Content Strategist completed! Analyzed {len(analyzed_content)} content opportunities")
 
     return {
-        "analyzed_content": updated_content,
+        "analyzed_content": analyzed_content,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully analyzed content for {len(updated_content)} articles and repositories")
+            SystemMessage(content=f"Successfully analyzed {len(analyzed_content)} content opportunities")
         ]
     }
 
+
 def content_writer_agent(state: AgentState) -> AgentState:
-    """Agent that generates LinkedIn posts and variations"""
+    """Agent that generates LinkedIn posts from strategic content analysis"""
+    print("✍️ STEP 9: Content Writer Agent - Generating LinkedIn posts...")
+    
     strategy_content = state.get("analyzed_content", [])
 
     if not strategy_content:
-        print("⚠️ No strategy content available for Content Writer Agent")
+        print("⚠️ No strategic content available for Content Writer Agent")
         return {
+            "linkedin_posts": [],
             "messages": state.get("messages", []) + [
-                SystemMessage(content="No strategy content to generate LinkedIn posts")
+                SystemMessage(content="No strategic content available to generate LinkedIn posts")
             ]
         }
 
     linkedin_posts = []
+    print(f"📝 Processing {len(strategy_content)} strategic content items...")
 
     for item in strategy_content:
         try:
-            # 1. Generate base post
+            content_type = item.get("content_type", "unknown")
+            strategy_analysis = item.get("strategy_analysis", {})
+            source_material = item.get("source_material", {})
+            
+            # Extract strategic insights for the post
+            if isinstance(strategy_analysis, dict):
+                recommended_content_type = strategy_analysis.get("recommended_content_type", "Commentary")
+                content_angle = strategy_analysis.get("content_angle", "Professional insight")
+                primary_topic_focus = strategy_analysis.get("primary_topic_focus", "Technology")
+                reasoning = strategy_analysis.get("reasoning", "")
+            else:
+                recommended_content_type = "Commentary"
+                content_angle = "Professional insight" 
+                primary_topic_focus = "Technology"
+                reasoning = ""
+
+            # Determine source material text based on content type
+            if content_type == "news_article":
+                source_text = f"Title: {source_material.get('title', '')}\nContent: {source_material.get('content', '')[:500]}..."
+                # Extract key insights from news analysis
+                relevance_data = source_material.get('relevance_analysis', {})
+                summary_data = source_material.get('summary', {})
+                key_insights = []
+                
+                if isinstance(relevance_data, dict):
+                    key_insights.extend(relevance_data.get('key_insights', []))
+                if isinstance(summary_data, dict):
+                    key_insights.extend(summary_data.get('key_points', []))
+                    
+            elif content_type == "github_project":
+                repo_analysis = source_material.get('analysis', {})
+                source_text = f"Project: {source_material.get('name', '')}\nDescription: {source_material.get('description', '')}"
+                if isinstance(repo_analysis, dict):
+                    content_summary = repo_analysis.get('content_summary', '')
+                    if content_summary:
+                        source_text += f"\nSummary: {content_summary}"
+                    key_insights = repo_analysis.get('technical_insights', [])
+                else:
+                    key_insights = []
+            else:
+                source_text = str(source_material)
+                key_insights = []
+
+            # 1. Generate base LinkedIn post
+            print(f"🎯 Generating post for {content_type}: {source_material.get('title') or source_material.get('name', 'Unknown')[:30]}...")
+            
             system_prompt_writer = linkedin_post_writer(
-                content_type=item.get("content_type", "tech update"),
-                source_material=item.get("content", ""),
-                previous_posts="I've never posted before",
+                content_type=recommended_content_type,
+                source_material=source_text,
+                previous_posts="Professional but conversational software developer voice with authentic personal insights",
                 audience="Developers, founders, and tech enthusiasts",
-                content_angle=item.get("post_angle", "insight"),
-                key_insights=item.get("key_insights", [])
+                content_angle=content_angle,
+                key_insights=key_insights[:3] if key_insights else [primary_topic_focus]
             )
+            
             messages_writer = [
                 SystemMessage(content=system_prompt_writer),
-                HumanMessage(content="Write the LinkedIn post in JSON as instructed.")
+                HumanMessage(content=f"Write a LinkedIn post based on the strategic analysis. Focus on: {reasoning[:100]}...")
             ]
+            
             writer_response = llm.invoke(messages_writer)
             clean_writer_response = re.sub(r"```(?:json)?|```", "", writer_response.content).strip()
             base_post_data = json.loads(clean_writer_response)
 
             base_post_text = base_post_data.get("post_content", "")
 
-            # 2. Generate variations
+            # 2. Generate variations of the post
+            print(f"🔄 Generating variations...")
             system_prompt_variations = post_variation_generator(
                 original_concept=base_post_text,
                 audience="Developers, founders, and tech enthusiasts",
-                voice_sample="Professional but conversational software developer voice"
+                voice_sample="Professional but conversational software developer voice with authentic personal insights"
             )
+            
             messages_variations = [
                 SystemMessage(content=system_prompt_variations),
-                HumanMessage(content="Generate 3 variations of the LinkedIn post in JSON.")
+                HumanMessage(content="Generate 3 variations of the LinkedIn post that maintain the strategic focus.")
             ]
+            
             variation_response = llm.invoke(messages_variations)
             clean_variation_response = re.sub(r"```(?:json)?|```", "", variation_response.content).strip()
             variations_data = json.loads(clean_variation_response)
 
-            # Store final combined result
+            # Store the complete result
             linkedin_posts.append({
+                "content_type": content_type,
+                "source_title": source_material.get('title') or source_material.get('name', 'Unknown'),
+                "strategic_reasoning": reasoning,
+                "recommended_content_type": recommended_content_type,
+                "content_angle": content_angle,
                 "base_post": base_post_data,
-                "variations": variations_data
+                "variations": variations_data,
+                "strategy_analysis": strategy_analysis,
+                "source_data": source_material
             })
+            
+            print(f"✅ Generated LinkedIn post with variations")
 
         except Exception as e:
-            print(f"❌ Content Writer Agent failed: {str(e)}")
+            print(f"❌ Content Writer Agent failed for item: {str(e)}")
+            import traceback
+            traceback.print_exc()
             continue
+
+    print(f"🎉 Content Writer Agent completed! Generated {len(linkedin_posts)} LinkedIn posts")
 
     return {
         "linkedin_posts": linkedin_posts,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Generated {len(linkedin_posts)} LinkedIn posts with variations")
+            SystemMessage(content=f"Successfully generated {len(linkedin_posts)} LinkedIn posts with strategic variations")
         ]
     }
 
+def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
+    """Node: Save generated LinkedIn posts to Notion database"""
+    print("💾 STEP 10: Saving LinkedIn posts to Notion database...")
+    linkedin_posts = state.get("linkedin_posts", [])
+    
+    if not linkedin_posts:
+        print("⚠️ No LinkedIn posts to save")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No LinkedIn posts to save to Notion")
+            ]
+        }
+    
+    # Helper function to safely get text values
+    def safe_text(text_value, default="", max_length=2000):
+        """Safely convert value to string, handling None/null values"""
+        if text_value is None:
+            return default
+        text_str = str(text_value).strip()
+        if not text_str:
+            return default
+        # Truncate if too long for Notion
+        return text_str[:max_length] if len(text_str) > max_length else text_str
+    
+    def clean_multi_select(items, max_items=10):
+        """Clean and prepare items for Notion multi_select"""
+        if not items or not isinstance(items, list):
+            return []
+        
+        clean_items = []
+        for item in items[:max_items]:  # Limit to max_items
+            if item and str(item).strip():
+                # Clean the item and truncate to 100 chars (Notion limit)
+                clean_item = str(item).strip()[:100]
+                if clean_item:
+                    clean_items.append({"name": clean_item})
+        return clean_items
+    
+    def extract_hashtags(post_data):
+        """Extract hashtags from post data"""
+        if not isinstance(post_data, dict):
+            return []
+        return post_data.get("hashtags", [])
+    
+    try:
+        # Initialize Notion client
+        notion = Client(auth=os.getenv("NOTION_TOKEN"))
+        database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
+        
+        if not database_id:
+            raise ValueError("Missing LINKEDIN_POSTS_DATABASE_ID in environment variables")
+            
+        saved_count = 0
+        print(f"📝 Attempting to save {len(linkedin_posts)} LinkedIn posts...")
+        
+        for post in linkedin_posts:
+            try:
+                # Extract main data
+                source_title = safe_text(post.get("source_title", "Unknown"))
+                content_type = safe_text(post.get("content_type", "unknown"))
+                strategic_reasoning = safe_text(post.get("strategic_reasoning", ""))
+                content_angle = safe_text(post.get("content_angle", ""))
+                recommended_content_type = safe_text(post.get("recommended_content_type", ""))
+                
+                # Extract base post data
+                base_post = post.get("base_post", {})
+                post_content = safe_text(base_post.get("post_content", ""), max_length=1900)
+                
+                # Extract post structure for additional info
+                post_structure = base_post.get("post_structure", {})
+                hook = safe_text(post_structure.get("hook", ""))
+                call_to_action = safe_text(post_structure.get("call_to_action", ""))
+                
+                # Extract variations
+                variations = post.get("variations", {})
+                variation_a = ""
+                variation_b = ""
+                variation_c = ""
+                
+                if isinstance(variations, dict):
+                    variations_data = variations.get("variations", {})
+                    if isinstance(variations_data, dict):
+                        variation_a = safe_text(variations_data.get("version_a_news_commentary", {}).get("content", ""), max_length=1900)
+                        variation_b = safe_text(variations_data.get("version_b_personal_experience", {}).get("content", ""), max_length=1900)
+                        variation_c = safe_text(variations_data.get("version_c_community_discussion", {}).get("content", ""), max_length=1900)
+                
+                # Extract hashtags
+                hashtags = extract_hashtags(base_post)
+                
+                # Extract source data
+                source_data = post.get("source_data", {})
+                source_url = ""
+                if isinstance(source_data, dict):
+                    source_url = source_data.get("article_url") or source_data.get("repo_url", "")
+                
+                # Determine engagement potential based on strategy analysis
+                strategy_analysis = post.get("strategy_analysis", {})
+                engagement_potential = "Medium"  # default
+                content_quality_score = 5  # default
+                
+                if isinstance(strategy_analysis, dict):
+                    content_score = strategy_analysis.get("content_opportunity_score", 5)
+                    if isinstance(content_score, (int, float)):
+                        content_quality_score = int(content_score)
+                        if content_score >= 8:
+                            engagement_potential = "High"
+                        elif content_score <= 4:
+                            engagement_potential = "Low"
+                
+                # Build properties for Notion
+                properties = {
+                    "Post Title": {
+                        "title": [{"text": {"content": source_title[:100]}}]  # Title field limit
+                    },
+                    "Post Content": {
+                        "rich_text": [{"text": {"content": post_content}}]
+                    },
+                    "Content Type": {
+                        "select": {"name": content_type[:100]}
+                    },
+                    "Source Title": {
+                        "rich_text": [{"text": {"content": source_title}}]
+                    },
+                    "Strategic Reasoning": {
+                        "rich_text": [{"text": {"content": strategic_reasoning}}]
+                    },
+                    "Content Angle": {
+                        "select": {"name": content_angle[:100] if content_angle else "General"}
+                    },
+                    "Recommended Content Type": {
+                        "select": {"name": recommended_content_type[:100] if recommended_content_type else "Commentary"}
+                    },
+                    "Post Status": {
+                        "status": {"name": "Generated"}
+                    },
+                    "Generated Date": {
+                        "date": {"start": datetime.now().date().isoformat()}
+                    },
+                    "Posting Priority": {
+                        "select": {"name": "Medium"}
+                    },
+                    "Engagement Potential": {
+                        "select": {"name": engagement_potential}
+                    },
+                    "Content Quality Score": {
+                        "number": content_quality_score
+                    },
+                    "Technical Relevance": {
+                        "select": {"name": "High" if content_type in ["github_project", "tutorial"] else "Medium"}
+                    },
+                    "Hook Strength": {
+                        "number": 7  # Default, could be analyzed by LLM later
+                    }
+                }
+                
+                # Add optional fields
+                if source_url and source_url.startswith("http"):
+                    properties["Source URL"] = {"url": source_url}
+                
+                if call_to_action:
+                    properties["Call to Action"] = {
+                        "rich_text": [{"text": {"content": call_to_action}}]
+                    }
+                
+                # Add hashtags if available
+                if hashtags:
+                    clean_hashtags = clean_multi_select(hashtags)
+                    if clean_hashtags:
+                        properties["Hashtags"] = {"multi_select": clean_hashtags}
+                
+                # Add variations if they exist
+                if variation_a:
+                    properties["Variation A - News Commentary"] = {
+                        "rich_text": [{"text": {"content": variation_a}}]
+                    }
+                
+                if variation_b:
+                    properties["Variation B - Personal Experience"] = {
+                        "rich_text": [{"text": {"content": variation_b}}]
+                    }
+                
+                if variation_c:
+                    properties["Variation C - Community Discussion"] = {
+                        "rich_text": [{"text": {"content": variation_c}}]
+                    }
+                
+                # Set target audience based on content type
+                audience_options = []
+                if content_type == "github_project":
+                    audience_options = [{"name": "Developers"}, {"name": "Tech Enthusiasts"}]
+                elif content_type == "news_article":
+                    audience_options = [{"name": "Developers"}, {"name": "Founders"}, {"name": "Tech Enthusiasts"}]
+                else:
+                    audience_options = [{"name": "Tech Enthusiasts"}]
+                
+                if audience_options:
+                    properties["Target Audience"] = {"multi_select": audience_options}
+                
+                # Create the Notion page
+                notion.pages.create(
+                    parent={"database_id": database_id},
+                    properties=properties
+                )
+                
+                saved_count += 1
+                print(f"✅ Saved LinkedIn post: {source_title[:50]}...")
+                
+            except Exception as post_error:
+                print(f"❌ Failed to save LinkedIn post '{post.get('source_title', 'Unknown')}': {post_error}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        print(f"🎉 Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion!")
+        
+        return {
+            "linkedin_posts": linkedin_posts,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion")
+            ]
+        }
+        
+    except Exception as e:
+        print(f"❌ Notion saving failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "linkedin_posts": linkedin_posts,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Error saving LinkedIn posts to Notion: {str(e)}")
+            ]
+        }
 
 
 # Build the graph
@@ -1274,6 +1634,9 @@ graph.add_node("summarizer", summarize_content)
 graph.add_node("notion_news_saver", save_news_to_notion)
 graph.add_node("github_analyzer", analyze_github_repos)
 graph.add_node("notion_github_saver", save_repo_to_notion)
+graph.add_node("content_strategist", post_content_strategist)
+graph.add_node("content_writer", content_writer_agent)
+graph.add_node("linkedin_posts_saver", save_linkedin_posts_to_notion)
 
 # Define the flow - FIXED VERSION
 graph.add_edge(START, "scraper")
