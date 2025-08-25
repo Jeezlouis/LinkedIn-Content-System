@@ -23,8 +23,9 @@ class DailyAgentState(TypedDict):
 # Initialize LLM
 llm = ChatDeepSeek(model="deepseek-chat")
 
+# Improved query logic for daily publisher
 def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
-    """Node 1: Fetch posts scheduled for today from Notion"""
+    """Node 1: Fetch posts scheduled for today from Notion - IMPROVED VERSION"""
     print("📅 STEP 1: Fetching posts scheduled for today...")
     
     try:
@@ -34,7 +35,7 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
         today = datetime.now().date().isoformat()
         current_hour = datetime.now().hour
         
-        # Query for posts scheduled for today that haven't been published yet
+        # More flexible query - get all posts for today that haven't been published
         response = notion.databases.query(
             database_id=database_id,
             filter={
@@ -65,6 +66,10 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
                 {
                     "property": "Content Quality Score",
                     "direction": "descending"
+                },
+                {
+                    "property": "Scheduled Time",  # Add time-based sorting
+                    "direction": "ascending"
                 }
             ]
         )
@@ -82,18 +87,35 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
             except:
                 scheduled_hour = 14  # Default to 2 PM
             
-            # Only include posts that are due now (within 1 hour window)
-            if abs(current_hour - scheduled_hour) <= 1:
+            # IMPROVED LOGIC: More flexible time window
+            time_diff = abs(current_hour - scheduled_hour)
+            
+            # Include posts if:
+            # 1. Exact hour match, OR
+            # 2. Within 2 hours and high priority, OR  
+            # 3. Past due (missed posts), OR
+            # 4. No other posts found and it's after 9 AM
+            priority = properties.get("Posting Priority", {}).get("select", {}).get("name", "Medium")
+            
+            should_include = (
+                time_diff == 0 or  # Exact time
+                (time_diff <= 2 and priority == "High") or  # High priority with wider window
+                (current_hour > scheduled_hour and current_hour - scheduled_hour <= 6) or  # Past due but not too old
+                (len(scheduled_posts) == 0 and current_hour >= 9)  # Fallback for morning posts
+            )
+            
+            if should_include:
                 post_data = {
                     "notion_page_id": page["id"],
                     "title": properties.get("Post Title", {}).get("title", [{}])[0].get("text", {}).get("content", ""),
                     "content": properties.get("Post Content", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
                     "content_type": properties.get("Content Type", {}).get("select", {}).get("name", ""),
-                    "posting_priority": properties.get("Posting Priority", {}).get("select", {}).get("name", "Medium"),
+                    "posting_priority": priority,
                     "quality_score": properties.get("Content Quality Score", {}).get("number", 5),
                     "scheduled_time": scheduled_time_text,
                     "scheduled_date": today,
                     "approval_status": properties.get("Approval Status", {}).get("select", {}).get("name", "Approve"),
+                    "time_difference": time_diff,  # Track how far off we are
                     "variations": {
                         "a": properties.get("Variation A - News Commentary", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
                         "b": properties.get("Variation B - Personal Experience", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
@@ -102,7 +124,7 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
                 }
                 scheduled_posts.append(post_data)
         
-        print(f"📊 Found {len(scheduled_posts)} posts scheduled for today at this hour")
+        print(f"📊 Found {len(scheduled_posts)} posts ready for publishing")
         
         return {
             "scheduled_posts": scheduled_posts,
@@ -120,6 +142,7 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
             ]
         }
 
+        
 def select_todays_post(state: DailyAgentState) -> DailyAgentState:
     """Node 2: Select the best post to publish right now"""
     print("🎯 STEP 2: Selecting best post for immediate publishing...")
