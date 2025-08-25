@@ -1475,258 +1475,258 @@ def content_writer_agent(state: AgentState) -> AgentState:
         ]
     }
 
-def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
-    """Node: Save generated LinkedIn posts to Notion database - FIXED VERSION"""
-    print("💾 STEP 10: Saving LinkedIn posts to Notion database...")
-    linkedin_posts = state.get("linkedin_posts", [])
+# def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
+#     """Node: Save generated LinkedIn posts to Notion database - FIXED VERSION"""
+#     print("💾 STEP 10: Saving LinkedIn posts to Notion database...")
+#     linkedin_posts = state.get("linkedin_posts", [])
     
-    if not linkedin_posts:
-        print("⚠️ No LinkedIn posts to save")
-        return {
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No LinkedIn posts to save to Notion")
-            ]
-        }
+#     if not linkedin_posts:
+#         print("⚠️ No LinkedIn posts to save")
+#         return {
+#             "messages": state.get("messages", []) + [
+#                 SystemMessage(content="No LinkedIn posts to save to Notion")
+#             ]
+#         }
     
-    # Helper function to safely get text values
-    def safe_text(text_value, default="", max_length=2000):
-        """Safely convert value to string, handling None/null values"""
-        if text_value is None:
-            return default
-        text_str = str(text_value).strip()
-        if not text_str:
-            return default
-        # Truncate if too long for Notion
-        return text_str[:max_length] if len(text_str) > max_length else text_str
+#     # Helper function to safely get text values
+#     def safe_text(text_value, default="", max_length=2000):
+#         """Safely convert value to string, handling None/null values"""
+#         if text_value is None:
+#             return default
+#         text_str = str(text_value).strip()
+#         if not text_str:
+#             return default
+#         # Truncate if too long for Notion
+#         return text_str[:max_length] if len(text_str) > max_length else text_str
     
-    def safe_select_text(text_value, default="General", max_length=100):
-        """Safely convert text for Notion select field (no commas, limited length)"""
-        if text_value is None:
-            return default
+#     def safe_select_text(text_value, default="General", max_length=100):
+#         """Safely convert text for Notion select field (no commas, limited length)"""
+#         if text_value is None:
+#             return default
         
-        text_str = str(text_value).strip()
-        if not text_str:
-            return default
+#         text_str = str(text_value).strip()
+#         if not text_str:
+#             return default
             
-        # Remove commas and other problematic characters for select fields
-        clean_text = text_str.replace(",", " -").replace("\n", " ").replace("\r", " ")
+#         # Remove commas and other problematic characters for select fields
+#         clean_text = text_str.replace(",", " -").replace("\n", " ").replace("\r", " ")
         
-        # Truncate and clean up multiple spaces
-        clean_text = " ".join(clean_text.split())
+#         # Truncate and clean up multiple spaces
+#         clean_text = " ".join(clean_text.split())
         
-        return clean_text[:max_length] if len(clean_text) > max_length else clean_text
+#         return clean_text[:max_length] if len(clean_text) > max_length else clean_text
     
-    def clean_multi_select(items, max_items=10):
-        """Clean and prepare items for Notion multi_select"""
-        if not items or not isinstance(items, list):
-            return []
+#     def clean_multi_select(items, max_items=10):
+#         """Clean and prepare items for Notion multi_select"""
+#         if not items or not isinstance(items, list):
+#             return []
         
-        clean_items = []
-        for item in items[:max_items]:  # Limit to max_items
-            if item and str(item).strip():
-                # Clean the item and remove commas for multi-select
-                clean_item = str(item).strip().replace(",", " -")[:100]
-                if clean_item:
-                    clean_items.append({"name": clean_item})
-        return clean_items
+#         clean_items = []
+#         for item in items[:max_items]:  # Limit to max_items
+#             if item and str(item).strip():
+#                 # Clean the item and remove commas for multi-select
+#                 clean_item = str(item).strip().replace(",", " -")[:100]
+#                 if clean_item:
+#                     clean_items.append({"name": clean_item})
+#         return clean_items
     
-    def extract_hashtags(post_data):
-        """Extract hashtags from post data"""
-        if not isinstance(post_data, dict):
-            return []
-        return post_data.get("hashtags", [])
+#     def extract_hashtags(post_data):
+#         """Extract hashtags from post data"""
+#         if not isinstance(post_data, dict):
+#             return []
+#         return post_data.get("hashtags", [])
     
-    try:
-        # Initialize Notion client
-        notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
+#     try:
+#         # Initialize Notion client
+#         notion = Client(auth=os.getenv("NOTION_TOKEN"))
+#         database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
         
-        if not database_id:
-            raise ValueError("Missing LINKEDIN_POSTS_DATABASE_ID in environment variables")
+#         if not database_id:
+#             raise ValueError("Missing LINKEDIN_POSTS_DATABASE_ID in environment variables")
             
-        saved_count = 0
-        print(f"📝 Attempting to save {len(linkedin_posts)} LinkedIn posts...")
+#         saved_count = 0
+#         print(f"📝 Attempting to save {len(linkedin_posts)} LinkedIn posts...")
         
-        for post in linkedin_posts:
-            try:
-                # Extract main data
-                source_title = safe_text(post.get("source_title", "Unknown"))
-                content_type = safe_select_text(post.get("content_type", "unknown"))
-                strategic_reasoning = safe_text(post.get("strategic_reasoning", ""))
-                content_angle = safe_select_text(post.get("content_angle", "General"))
-                recommended_content_type = safe_select_text(post.get("recommended_content_type", "Commentary"))
+#         for post in linkedin_posts:
+#             try:
+#                 # Extract main data
+#                 source_title = safe_text(post.get("source_title", "Unknown"))
+#                 content_type = safe_select_text(post.get("content_type", "unknown"))
+#                 strategic_reasoning = safe_text(post.get("strategic_reasoning", ""))
+#                 content_angle = safe_select_text(post.get("content_angle", "General"))
+#                 recommended_content_type = safe_select_text(post.get("recommended_content_type", "Commentary"))
                 
-                # Extract base post data
-                base_post = post.get("base_post", {})
-                post_content = safe_text(base_post.get("post_content", ""), max_length=1900)
+#                 # Extract base post data
+#                 base_post = post.get("base_post", {})
+#                 post_content = safe_text(base_post.get("post_content", ""), max_length=1900)
                 
-                # Extract post structure for additional info
-                post_structure = base_post.get("post_structure", {})
-                hook = safe_text(post_structure.get("hook", ""))
-                call_to_action = safe_text(post_structure.get("call_to_action", ""))
+#                 # Extract post structure for additional info
+#                 post_structure = base_post.get("post_structure", {})
+#                 hook = safe_text(post_structure.get("hook", ""))
+#                 call_to_action = safe_text(post_structure.get("call_to_action", ""))
                 
-                # Extract variations
-                variations = post.get("variations", {})
-                variation_a = ""
-                variation_b = ""
-                variation_c = ""
+#                 # Extract variations
+#                 variations = post.get("variations", {})
+#                 variation_a = ""
+#                 variation_b = ""
+#                 variation_c = ""
                 
-                if isinstance(variations, dict):
-                    variations_data = variations.get("variations", {})
-                    if isinstance(variations_data, dict):
-                        variation_a = safe_text(variations_data.get("version_a_news_commentary", {}).get("content", ""), max_length=1900)
-                        variation_b = safe_text(variations_data.get("version_b_personal_experience", {}).get("content", ""), max_length=1900)
-                        variation_c = safe_text(variations_data.get("version_c_community_discussion", {}).get("content", ""), max_length=1900)
+#                 if isinstance(variations, dict):
+#                     variations_data = variations.get("variations", {})
+#                     if isinstance(variations_data, dict):
+#                         variation_a = safe_text(variations_data.get("version_a_news_commentary", {}).get("content", ""), max_length=1900)
+#                         variation_b = safe_text(variations_data.get("version_b_personal_experience", {}).get("content", ""), max_length=1900)
+#                         variation_c = safe_text(variations_data.get("version_c_community_discussion", {}).get("content", ""), max_length=1900)
                 
-                # Extract hashtags
-                hashtags = extract_hashtags(base_post)
+#                 # Extract hashtags
+#                 hashtags = extract_hashtags(base_post)
                 
-                # Extract source data
-                source_data = post.get("source_data", {})
-                source_url = ""
-                if isinstance(source_data, dict):
-                    source_url = source_data.get("article_url") or source_data.get("repo_url", "")
+#                 # Extract source data
+#                 source_data = post.get("source_data", {})
+#                 source_url = ""
+#                 if isinstance(source_data, dict):
+#                     source_url = source_data.get("article_url") or source_data.get("repo_url", "")
                 
-                # Determine engagement potential based on strategy analysis
-                strategy_analysis = post.get("strategy_analysis", {})
-                engagement_potential = "Medium"  # default
-                content_quality_score = 5  # default
+#                 # Determine engagement potential based on strategy analysis
+#                 strategy_analysis = post.get("strategy_analysis", {})
+#                 engagement_potential = "Medium"  # default
+#                 content_quality_score = 5  # default
                 
-                if isinstance(strategy_analysis, dict):
-                    content_score = strategy_analysis.get("content_opportunity_score", 5)
-                    if isinstance(content_score, (int, float)):
-                        content_quality_score = int(content_score)
-                        if content_score >= 8:
-                            engagement_potential = "High"
-                        elif content_score <= 4:
-                            engagement_potential = "Low"
+#                 if isinstance(strategy_analysis, dict):
+#                     content_score = strategy_analysis.get("content_opportunity_score", 5)
+#                     if isinstance(content_score, (int, float)):
+#                         content_quality_score = int(content_score)
+#                         if content_score >= 8:
+#                             engagement_potential = "High"
+#                         elif content_score <= 4:
+#                             engagement_potential = "Low"
                 
-                # Build properties for Notion
-                properties = {
-                    "Post Title": {
-                        "title": [{"text": {"content": source_title[:100]}}]  # Title field limit
-                    },
-                    "Post Content": {
-                        "rich_text": [{"text": {"content": post_content}}]
-                    },
-                    "Content Type": {
-                        "select": {"name": content_type}
-                    },
-                    "Source Title": {
-                        "rich_text": [{"text": {"content": source_title}}]
-                    },
-                    "Strategic Reasoning": {
-                        "rich_text": [{"text": {"content": strategic_reasoning}}]
-                    },
-                    "Content Angle": {
-                        "select": {"name": content_angle}
-                    },
-                    "Recommended Content Type": {
-                        "select": {"name": recommended_content_type}
-                    },
-                    "Post Status": {
-                        "status": {"name": "Generated"}
-                    },
-                    "Generated Date": {
-                        "date": {"start": datetime.now().date().isoformat()}
-                    },
-                    "Posting Priority": {
-                        "select": {"name": "Medium"}
-                    },
-                    "Engagement Potential": {
-                        "select": {"name": engagement_potential}
-                    },
-                    "Content Quality Score": {
-                        "number": content_quality_score
-                    },
-                    "Technical Relevance": {
-                        "select": {"name": "High" if content_type in ["github_project", "tutorial"] else "Medium"}
-                    },
-                    "Hook Strength": {
-                        "number": 7  # Default, could be analyzed by LLM later
-                    }
-                }
+#                 # Build properties for Notion
+#                 properties = {
+#                     "Post Title": {
+#                         "title": [{"text": {"content": source_title[:100]}}]  # Title field limit
+#                     },
+#                     "Post Content": {
+#                         "rich_text": [{"text": {"content": post_content}}]
+#                     },
+#                     "Content Type": {
+#                         "select": {"name": content_type}
+#                     },
+#                     "Source Title": {
+#                         "rich_text": [{"text": {"content": source_title}}]
+#                     },
+#                     "Strategic Reasoning": {
+#                         "rich_text": [{"text": {"content": strategic_reasoning}}]
+#                     },
+#                     "Content Angle": {
+#                         "select": {"name": content_angle}
+#                     },
+#                     "Recommended Content Type": {
+#                         "select": {"name": recommended_content_type}
+#                     },
+#                     "Post Status": {
+#                         "status": {"name": "Generated"}
+#                     },
+#                     "Generated Date": {
+#                         "date": {"start": datetime.now().date().isoformat()}
+#                     },
+#                     "Posting Priority": {
+#                         "select": {"name": "Medium"}
+#                     },
+#                     "Engagement Potential": {
+#                         "select": {"name": engagement_potential}
+#                     },
+#                     "Content Quality Score": {
+#                         "number": content_quality_score
+#                     },
+#                     "Technical Relevance": {
+#                         "select": {"name": "High" if content_type in ["github_project", "tutorial"] else "Medium"}
+#                     },
+#                     "Hook Strength": {
+#                         "number": 7  # Default, could be analyzed by LLM later
+#                     }
+#                 }
                 
-                # Add optional fields
-                if source_url and source_url.startswith("http"):
-                    properties["Source URL"] = {"url": source_url}
+#                 # Add optional fields
+#                 if source_url and source_url.startswith("http"):
+#                     properties["Source URL"] = {"url": source_url}
                 
-                if call_to_action:
-                    properties["Call to Action"] = {
-                        "rich_text": [{"text": {"content": call_to_action}}]
-                    }
+#                 if call_to_action:
+#                     properties["Call to Action"] = {
+#                         "rich_text": [{"text": {"content": call_to_action}}]
+#                     }
                 
-                # Add hashtags if available
-                if hashtags:
-                    clean_hashtags = clean_multi_select(hashtags)
-                    if clean_hashtags:
-                        properties["Hashtags"] = {"multi_select": clean_hashtags}
+#                 # Add hashtags if available
+#                 if hashtags:
+#                     clean_hashtags = clean_multi_select(hashtags)
+#                     if clean_hashtags:
+#                         properties["Hashtags"] = {"multi_select": clean_hashtags}
                 
-                # Add variations if they exist
-                if variation_a:
-                    properties["Variation A - News Commentary"] = {
-                        "rich_text": [{"text": {"content": variation_a}}]
-                    }
+#                 # Add variations if they exist
+#                 if variation_a:
+#                     properties["Variation A - News Commentary"] = {
+#                         "rich_text": [{"text": {"content": variation_a}}]
+#                     }
                 
-                if variation_b:
-                    properties["Variation B - Personal Experience"] = {
-                        "rich_text": [{"text": {"content": variation_b}}]
-                    }
+#                 if variation_b:
+#                     properties["Variation B - Personal Experience"] = {
+#                         "rich_text": [{"text": {"content": variation_b}}]
+#                     }
                 
-                if variation_c:
-                    properties["Variation C - Community Discussion"] = {
-                        "rich_text": [{"text": {"content": variation_c}}]
-                    }
+#                 if variation_c:
+#                     properties["Variation C - Community Discussion"] = {
+#                         "rich_text": [{"text": {"content": variation_c}}]
+#                     }
                 
-                # Set target audience based on content type
-                audience_options = []
-                if content_type == "github_project":
-                    audience_options = [{"name": "Developers"}, {"name": "Tech Enthusiasts"}]
-                elif content_type == "news_article":
-                    audience_options = [{"name": "Developers"}, {"name": "Founders"}, {"name": "Tech Enthusiasts"}]
-                else:
-                    audience_options = [{"name": "Tech Enthusiasts"}]
+#                 # Set target audience based on content type
+#                 audience_options = []
+#                 if content_type == "github_project":
+#                     audience_options = [{"name": "Developers"}, {"name": "Tech Enthusiasts"}]
+#                 elif content_type == "news_article":
+#                     audience_options = [{"name": "Developers"}, {"name": "Founders"}, {"name": "Tech Enthusiasts"}]
+#                 else:
+#                     audience_options = [{"name": "Tech Enthusiasts"}]
                 
-                if audience_options:
-                    properties["Target Audience"] = {"multi_select": audience_options}
+#                 if audience_options:
+#                     properties["Target Audience"] = {"multi_select": audience_options}
                 
-                # Create the Notion page
-                notion.pages.create(
-                    parent={"database_id": database_id},
-                    properties=properties
-                )
+#                 # Create the Notion page
+#                 notion.pages.create(
+#                     parent={"database_id": database_id},
+#                     properties=properties
+#                 )
                 
-                saved_count += 1
-                print(f"✅ Saved LinkedIn post: {source_title[:50]}...")
+#                 saved_count += 1
+#                 print(f"✅ Saved LinkedIn post: {source_title[:50]}...")
                 
-            except Exception as post_error:
-                print(f"❌ Failed to save LinkedIn post '{post.get('source_title', 'Unknown')}': {post_error}")
-                # Uncomment for debugging:
-                # import traceback
-                # traceback.print_exc()
-                continue
+#             except Exception as post_error:
+#                 print(f"❌ Failed to save LinkedIn post '{post.get('source_title', 'Unknown')}': {post_error}")
+#                 # Uncomment for debugging:
+#                 # import traceback
+#                 # traceback.print_exc()
+#                 continue
         
-        print(f"🎉 Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion!")
+#         print(f"🎉 Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion!")
         
-        return {
-            "linkedin_posts": linkedin_posts,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion")
-            ]
-        }
+#         return {
+#             "linkedin_posts": linkedin_posts,
+#             "messages": state.get("messages", []) + [
+#                 SystemMessage(content=f"Successfully saved {saved_count} of {len(linkedin_posts)} LinkedIn posts to Notion")
+#             ]
+#         }
         
-    except Exception as e:
-        print(f"❌ Notion saving failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "linkedin_posts": linkedin_posts,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Error saving LinkedIn posts to Notion: {str(e)}")
-            ]
-        }
+#     except Exception as e:
+#         print(f"❌ Notion saving failed: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         return {
+#             "linkedin_posts": linkedin_posts,
+#             "messages": state.get("messages", []) + [
+#                 SystemMessage(content=f"Error saving LinkedIn posts to Notion: {str(e)}")
+#             ]
+#         }
 
-def post_content_reviewer(state: AgentState) -> AgentState:
+def content_reviewer_agent(state: AgentState) -> AgentState:
     """Node 13: Reviews generated posts for quality, brand alignment, and professional standards"""
     linkedin_posts = state.get("linkedin_posts", [])
     reviewed_posts = []
@@ -1824,7 +1824,7 @@ def post_content_reviewer(state: AgentState) -> AgentState:
         ]
     }
 
-def scheduling_optimizer_agent(state: WeeklyAgentState) -> WeeklyAgentState:
+def scheduling_optimizer_agent(state: AgentState) -> AgentState:
     """NEW Node: Determine optimal posting times for all approved posts"""
     print("⏰ STEP 12: Scheduling Optimizer - Planning optimal posting times...")
     
@@ -1953,7 +1953,7 @@ def scheduling_optimizer_agent(state: WeeklyAgentState) -> WeeklyAgentState:
         ]
     }
 
-def save_scheduled_posts_to_notion(state: WeeklyAgentState) -> WeeklyAgentState:
+def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
     """NEW Node: Save scheduled posts to Notion with timing and priority data"""
     print("💾 STEP 13: Saving scheduled posts to Notion...")
     
@@ -2137,7 +2137,9 @@ graph.add_node("github_analyzer", analyze_github_repos)
 graph.add_node("notion_github_saver", save_repo_to_notion)
 graph.add_node("content_strategist", post_content_strategist)
 graph.add_node("content_writer", content_writer_agent)
-graph.add_node("linkedin_posts_saver", save_linkedin_posts_to_notion)
+graph.add_node("content_reviewer", content_reviewer_agent) 
+graph.add_node("scheduling_optimizer", scheduling_optimizer_agent) 
+graph.add_node("scheduled_posts_saver", save_scheduled_posts_to_notion) 
 
 # Define the flow - FIXED VERSION
 graph.add_edge(START, "scraper")
@@ -2150,22 +2152,21 @@ graph.add_edge("notion_news_saver", "github_analyzer")
 graph.add_edge("github_analyzer", "notion_github_saver")
 graph.add_edge("notion_github_saver", "content_strategist")
 graph.add_edge("content_strategist", "content_writer")
-graph.add_edge("content_writer", "linkedin_posts_saver")
-graph.add_edge("linkedin_posts_saver", END)     
+graph.add_edge("content_writer", "content_reviewer")  # NEW EDGE
+graph.add_edge("content_reviewer", "scheduling_optimizer")  # NEW EDGE
+graph.add_edge("scheduling_optimizer", "scheduled_posts_saver")  # NEW EDGE
+graph.add_edge("scheduled_posts_saver", END)   
 
-# to test the github analyzer alone
-# graph.add_edge(START, "github_analyzer")
-# graph.add_edge("github_analyzer", "notion_github_saver")
-# graph.add_edge("notion_github_saver", END)
 
 # Compile the graph
 app = graph.compile()
 
 # Enhanced run function with better progress indicators
 
-def run_news_analysis():
-    """Run the complete LinkedIn content pipeline with post generation and saving"""
-    print("🚀 Starting Complete LinkedIn Content Pipeline...")
+def run_weekly_content_generation():
+    """Enhanced weekly content generation with review and scheduling"""
+    print("🚀 ENHANCED WEEKLY CONTENT PIPELINE")
+    print("🎯 Content Generation → Strategy → Review → Scheduling")
     print("=" * 60)
     
     initial_state = {
@@ -2175,41 +2176,58 @@ def run_news_analysis():
         "analyzed_articles": [],
         "github_data": [],
         "analyzed_content": [],
-        "linkedin_posts": []
+        "linkedin_posts": [],
+        "reviewed_posts": [],
+        "scheduled_posts": []
     }
     
     try:
         result = app.invoke(initial_state)
         
         print("\n" + "=" * 60)
-        print("✅ COMPLETE PIPELINE FINISHED SUCCESSFULLY!")
+        print("✅ WEEKLY PIPELINE COMPLETED SUCCESSFULLY!")
         print("=" * 60)
+        
+        # Show comprehensive results
         print(f"📊 Total Messages: {len(result['messages'])}")
         print(f"📰 Articles Processed: {len(result.get('analyzed_articles', []))}")
         print(f"🔄 Repos Processed: {len(result.get('github_data', []))}")
-        print(f"🎯 Strategic Content Items: {len(result.get('analyzed_content', []))}")
-        print(f"✍️ LinkedIn Posts Generated: {len(result.get('linkedin_posts', []))}")
-        print(f"💾 Posts Saved to Notion: Check your LinkedIn Posts database!")
+        print(f"🎯 Strategic Content: {len(result.get('analyzed_content', []))}")
+        print(f"✍️ Posts Generated: {len(result.get('linkedin_posts', []))}")
+        print(f"🔍 Posts Reviewed: {len(result.get('reviewed_posts', []))}")
+        print(f"⏰ Posts Scheduled: {len(result.get('scheduled_posts', []))}")
         
-        # Show final summary
-        linkedin_posts = result.get('linkedin_posts', [])
-        if linkedin_posts:
-            print(f"\n📝 FINAL LINKEDIN POSTS READY:")
-            for i, post in enumerate(linkedin_posts, 1):
-                print(f"   {i}. {post.get('source_title', 'Unknown')[:50]}...")
-                print(f"      🎯 Strategy: {post.get('recommended_content_type')}")
-                print(f"      📊 Quality Score: {post.get('strategy_analysis', {}).get('content_opportunity_score', 'N/A')}")
+        # Show scheduling summary
+        scheduled_posts = result.get('scheduled_posts', [])
+        if scheduled_posts:
+            print(f"\n📅 SCHEDULED POSTS READY FOR DAILY PUBLISHING:")
+            high_priority = [p for p in scheduled_posts if p.get('posting_priority') == 'High']
+            medium_priority = [p for p in scheduled_posts if p.get('posting_priority') == 'Medium']
+            
+            print(f"   🔥 High Priority: {len(high_priority)} posts")
+            print(f"   📈 Medium Priority: {len(medium_priority)} posts")
+            print(f"   📅 Date Range: Next {len(scheduled_posts)} days")
+            
+            for i, post in enumerate(scheduled_posts[:3], 1):  # Show first 3
+                scheduled_dt = post.get('scheduled_datetime', 'Unknown')
+                try:
+                    dt = datetime.fromisoformat(scheduled_dt.replace('Z', '+00:00'))
+                    date_str = dt.strftime('%m/%d %H:%M')
+                except:
+                    date_str = 'Unknown'
+                    
+                print(f"   {i}. {post.get('source_title', 'Unknown')[:40]}... → {date_str}")
         
-        print(f"\n🎉 Go check your Notion LinkedIn Posts database!")
-        
+        print(f"\n🎉 Ready for daily publishing! Check your Notion database.")
         return result
         
     except Exception as e:
-        print(f"\n❌ PIPELINE FAILED: {str(e)}")
+        print(f"\n❌ WEEKLY PIPELINE FAILED: {str(e)}")
         import traceback
         traceback.print_exc()
         return None
 
 
+
 if __name__ == "__main__":
-    run_news_analysis()
+    run_weekly_content_generation()
