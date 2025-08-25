@@ -13,7 +13,7 @@ from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
 from github import Github, UnknownObjectException, RateLimitExceededException
 from repo import analyze_single_repo
-from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator
+from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator, engagement_predictor, posting_timing_optimizer
 import os
 import json, re
 import time
@@ -32,6 +32,8 @@ class AgentState(TypedDict):
     github_data: List[dict] 
     analyzed_content: List[dict]
     linkedin_posts: List[dict]
+    reviewed_posts: List[dict] 
+    scheduled_posts: List[dict] 
 
 def robust_json_parse(response_text):
     """Robustly parse JSON from LLM response, handling various formats"""
@@ -1723,7 +1725,402 @@ def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
                 SystemMessage(content=f"Error saving LinkedIn posts to Notion: {str(e)}")
             ]
         }
+
+def post_content_reviewer(state: AgentState) -> AgentState:
+    """Node 13: Reviews generated posts for quality, brand alignment, and professional standards"""
+    linkedin_posts = state.get("linkedin_posts", [])
+    reviewed_posts = []
+
+    if not linkedin_posts:
+        print("No linkein posts available for content reviewer agent")
+        return {
+            "linkedin_posts": [],
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No posts available for LinkedIn posts review")
+            ]
+        }
+
+    print(f"📋 Reviewing {len(linkedin_posts)} generated posts...")
+
+    for i, post in enumerate(linkedin_posts, 1):
+        try:
+            
+            # Extract the main post content for review
+            base_post = post.get("base_post", {})
+            post_content = base_post.get("post_content", "")
+            content_type = post.get("content_type", "unknown")
+            
+            if not post_content:
+                print(f"⚠️ Skipping post {i} - no content to review")
+                continue
+            
+            # Generate review using your existing prompt
+            system_prompt = content_reviewer(
+                post_draft=post_content,
+                brand_voice="Professional but conversational software developer sharing authentic insights and practical knowledge",
+                audience="Developers, founders, and tech enthusiasts interested in AI, automation, and modern software development",
+                topic=content_type
+            )
+            
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Review this LinkedIn post for final quality control and brand alignment.")
+            ]
+            
+            response = safe_llm_call(messages)
+            review_data = robust_json_parse(response.content)
+            
+            if not review_data:
+                print(f"⚠️ Failed to parse review for post {i}, using default approval")
+                review_data = {
+                    "approval_status": "Approve",
+                    "reasoning": "Default approval due to parsing error",
+                    "quality_assessment": {"brand_alignment": {"score": 7}}
+                }
+            
+            # Extract review decision
+            approval_status = review_data.get("approval_status", "Approve")
+            reasoning = review_data.get("reasoning", "Standard review")
+            quality_score = review_data.get("quality_assessment", {}).get("brand_alignment", {}).get("score", 7)
+            
+            # Add review data to the post
+            reviewed_post = post.copy()
+            reviewed_post.update({
+                "review_result": review_data,
+                "approval_status": approval_status,
+                "review_reasoning": reasoning,
+                "final_quality_score": quality_score,
+                "reviewed_at": datetime.now().isoformat()
+            })
+            
+            reviewed_posts.append(reviewed_post)
+            
+            print(f"✅ Review completed: {approval_status} (Quality: {quality_score}/10)")
+            
+            # Small delay to avoid rate limits
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"❌ Review failed for post {i}: {e}")
+            # Add post with default approval on error
+            error_post = post.copy()
+            error_post.update({
+                "review_result": {"approval_status": "Approve", "reasoning": f"Review error: {str(e)}"},
+                "approval_status": "Approve",
+                "review_reasoning": f"Default approval due to review error: {str(e)}",
+                "final_quality_score": 6,
+                "reviewed_at": datetime.now().isoformat()
+            })
+            reviewed_posts.append(error_post)
+            continue
+    
+    approved_count = len([p for p in reviewed_posts if p.get("approval_status") == "Approve"])
+    print(f"🎯 Content Review Summary: {approved_count}/{len(reviewed_posts)} posts approved")
+    
+    return {
+        "reviewed_posts": reviewed_posts,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Content review completed: {approved_count}/{len(reviewed_posts)} posts approved")
+        ]
+    }
+
+def scheduling_optimizer_agent(state: WeeklyAgentState) -> WeeklyAgentState:
+    """NEW Node: Determine optimal posting times for all approved posts"""
+    print("⏰ STEP 12: Scheduling Optimizer - Planning optimal posting times...")
+    
+    reviewed_posts = state.get("reviewed_posts", [])
+    
+    if not reviewed_posts:
+        print("⚠️ No reviewed posts to schedule")
+        return {
+            "scheduled_posts": [],
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No posts available for scheduling")
+            ]
+        }
+    
+    # Filter only approved posts
+    approved_posts = [p for p in reviewed_posts if p.get("approval_status") == "Approve"]
+    print(f"📅 Scheduling {len(approved_posts)} approved posts...")
+    
+    scheduled_posts = []
+    base_date = datetime.now().date()
+    
+    for i, post in enumerate(approved_posts):
+        try:
+            
+            content_type = post.get("content_type", "General")
+            source_title = post.get("source_title", "Tech Content")
+            final_quality_score = post.get("final_quality_score", 7)
+            
+            # Generate optimal timing using your existing prompt
+            system_prompt = posting_timing_optimizer(
+                content_type=content_type,
+                topic=source_title,
+                audience_segments=["Software Developers", "Tech Founders", "AI/ML Engineers", "Startup Enthusiasts"],
+                timezone="UTC",
+                current_time=datetime.now().isoformat(),
+                recent_post_times=[]  # TODO: Could fetch from historical data
+            )
+            
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Determine optimal posting schedule for this {content_type} content about {source_title}.")
+            ]
+            
+            response = safe_llm_call(messages)
+            timing_data = robust_json_parse(response.content)
+            
+            if not timing_data:
+                print(f"⚠️ Failed to parse timing for post {i+1}, using default schedule")
+                timing_data = {
+                    "optimal_posting_time": {
+                        "recommended_datetime": f"{base_date + timedelta(days=i)} 14:00:00 UTC",
+                        "reasoning": "Default scheduling due to parsing error"
+                    }
+                }
+            
+            # Extract timing recommendations
+            optimal_time = timing_data.get("optimal_posting_time", {})
+            recommended_datetime = optimal_time.get("recommended_datetime", f"{base_date + timedelta(days=i)} 14:00:00 UTC")
+            timing_reasoning = optimal_time.get("reasoning", "Standard professional hours")
+            
+            # Parse and normalize the recommended datetime
+            try:
+                # Handle various datetime formats from LLM
+                if "Today" in recommended_datetime or "today" in recommended_datetime:
+                    scheduled_datetime = datetime.combine(base_date, datetime.strptime("14:00", "%H:%M").time())
+                elif "Tomorrow" in recommended_datetime or "tomorrow" in recommended_datetime:
+                    scheduled_datetime = datetime.combine(base_date + timedelta(days=1), datetime.strptime("14:00", "%H:%M").time())
+                else:
+                    # Try to parse the datetime string
+                    try:
+                        # Handle various formats
+                        for fmt in ["%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M UTC", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]:
+                            try:
+                                scheduled_datetime = datetime.strptime(recommended_datetime.replace(" UTC", ""), fmt.replace(" UTC", ""))
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            # Default if parsing fails
+                            scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+                    except:
+                        scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+            except:
+                # Ultimate fallback
+                scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+            
+            # Create scheduled post
+            scheduled_post = post.copy()
+            scheduled_post.update({
+                "scheduled_datetime": scheduled_datetime.isoformat(),
+                "scheduling_data": timing_data,
+                "timing_reasoning": timing_reasoning,
+                "posting_priority": "High" if final_quality_score >= 8 else "Medium" if final_quality_score >= 6 else "Low",
+                "scheduled_at": datetime.now().isoformat(),
+                "ready_for_publishing": True
+            })
+            
+            scheduled_posts.append(scheduled_post)
+            
+            print(f"✅ Scheduled for: {scheduled_datetime.strftime('%Y-%m-%d %H:%M UTC')} (Priority: {scheduled_post['posting_priority']})")
+            
+            # Small delay
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"❌ Scheduling failed for post {i+1}: {e}")
+            # Add with default scheduling
+            default_scheduled_post = post.copy()
+            default_scheduled_post.update({
+                "scheduled_datetime": datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time()).isoformat(),
+                "scheduling_data": {"error": str(e)},
+                "timing_reasoning": f"Default scheduling due to error: {str(e)}",
+                "posting_priority": "Medium",
+                "scheduled_at": datetime.now().isoformat(),
+                "ready_for_publishing": True
+            })
+            scheduled_posts.append(default_scheduled_post)
+            continue
+    
+    print(f"⏰ Scheduling Summary: {len(scheduled_posts)} posts scheduled for optimal times")
+    
+    return {
+        "scheduled_posts": scheduled_posts,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Scheduling optimization completed: {len(scheduled_posts)} posts ready for publishing")
+        ]
+    }
+
+def save_scheduled_posts_to_notion(state: WeeklyAgentState) -> WeeklyAgentState:
+    """NEW Node: Save scheduled posts to Notion with timing and priority data"""
+    print("💾 STEP 13: Saving scheduled posts to Notion...")
+    
+    scheduled_posts = state.get("scheduled_posts", [])
+    
+    if not scheduled_posts:
+        print("⚠️ No scheduled posts to save")
+        return {
+            "messages": state.get("messages", []) + [
+                SystemMessage(content="No scheduled posts to save")
+            ]
+        }
+    
+    def safe_text(text_value, default="", max_length=2000):
+        if text_value is None:
+            return default
+        text_str = str(text_value).strip()
+        if not text_str:
+            return default
+        return text_str[:max_length] if len(text_str) > max_length else text_str
+    
+    def safe_select_text(text_value, default="Medium", max_length=100):
+        if text_value is None:
+            return default
+        text_str = str(text_value).strip()
+        if not text_str:
+            return default
+        clean_text = text_str.replace(",", " -").replace("\n", " ").replace("\r", " ")
+        clean_text = " ".join(clean_text.split())
+        return clean_text[:max_length] if len(clean_text) > max_length else clean_text
+    
+    try:
+        notion = Client(auth=os.getenv("NOTION_TOKEN"))
+        database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
         
+        if not database_id:
+            raise ValueError("Missing LINKEDIN_POSTS_DATABASE_ID")
+        
+        saved_count = 0
+        
+        for post in scheduled_posts:
+            try:
+                # Extract all the data
+                source_title = safe_text(post.get("source_title", "Unknown"))
+                base_post = post.get("base_post", {})
+                post_content = safe_text(base_post.get("post_content", ""), max_length=1900)
+                
+                # Scheduling data
+                scheduled_datetime = post.get("scheduled_datetime", "")
+                posting_priority = safe_select_text(post.get("posting_priority", "Medium"))
+                timing_reasoning = safe_text(post.get("timing_reasoning", ""))
+                
+                # Review data
+                approval_status = post.get("approval_status", "Approve")
+                final_quality_score = post.get("final_quality_score", 7)
+                review_reasoning = safe_text(post.get("review_reasoning", ""))
+                
+                # Parse scheduled datetime for Notion
+                scheduled_date = ""
+                scheduled_time = ""
+                try:
+                    dt = datetime.fromisoformat(scheduled_datetime.replace('Z', '+00:00'))
+                    scheduled_date = dt.date().isoformat()
+                    scheduled_time = dt.time().strftime("%H:%M")
+                except:
+                    scheduled_date = datetime.now().date().isoformat()
+                    scheduled_time = "14:00"
+                
+                # Build properties for Notion
+                properties = {
+                    "Post Title": {
+                        "title": [{"text": {"content": source_title[:100]}}]
+                    },
+                    "Post Content": {
+                        "rich_text": [{"text": {"content": post_content}}]
+                    },
+                    "Post Status": {
+                        "status": {"name": "Scheduled"}  # NEW STATUS
+                    },
+                    "Scheduled Date": {
+                        "date": {"start": scheduled_date}
+                    },
+                    "Scheduled Time": {
+                        "rich_text": [{"text": {"content": scheduled_time}}]
+                    },
+                    "Posting Priority": {
+                        "select": {"name": posting_priority}
+                    },
+                    "Content Quality Score": {
+                        "number": int(final_quality_score)
+                    },
+                    "Approval Status": {
+                        "select": {"name": approval_status}
+                    },
+                    "Review Reasoning": {
+                        "rich_text": [{"text": {"content": review_reasoning}}]
+                    },
+                    "Timing Reasoning": {
+                        "rich_text": [{"text": {"content": timing_reasoning}}]
+                    },
+                    "Ready for Publishing": {
+                        "checkbox": True
+                    },
+                    "Generated Date": {
+                        "date": {"start": datetime.now().date().isoformat()}
+                    },
+                    "LinkedIn Post Created": {
+                        "checkbox": False  # Will be set to True after actual publishing
+                    }
+                }
+                
+                # Add other existing fields
+                content_type = safe_select_text(post.get("content_type", "General"))
+                properties["Content Type"] = {"select": {"name": content_type}}
+                
+                engagement_potential = safe_select_text(post.get("engagement_potential", "Medium"))
+                properties["Engagement Potential"] = {"select": {"name": engagement_potential}}
+                
+                # Add variations if they exist
+                variations = post.get("variations", {})
+                if isinstance(variations, dict):
+                    variations_data = variations.get("variations", {})
+                    if isinstance(variations_data, dict):
+                        variation_a = safe_text(variations_data.get("version_a_news_commentary", {}).get("content", ""), max_length=1900)
+                        variation_b = safe_text(variations_data.get("version_b_personal_experience", {}).get("content", ""), max_length=1900)
+                        variation_c = safe_text(variations_data.get("version_c_community_discussion", {}).get("content", ""), max_length=1900)
+                        
+                        if variation_a:
+                            properties["Variation A - News Commentary"] = {"rich_text": [{"text": {"content": variation_a}}]}
+                        if variation_b:
+                            properties["Variation B - Personal Experience"] = {"rich_text": [{"text": {"content": variation_b}}]}
+                        if variation_c:
+                            properties["Variation C - Community Discussion"] = {"rich_text": [{"text": {"content": variation_c}}]}
+                
+                # Create the Notion page
+                notion.pages.create(
+                    parent={"database_id": database_id},
+                    properties=properties
+                )
+                
+                saved_count += 1
+                print(f"✅ Saved scheduled post: {source_title[:50]}... (Priority: {posting_priority}, Date: {scheduled_date} {scheduled_time})")
+                
+            except Exception as post_error:
+                print(f"❌ Failed to save scheduled post: {post_error}")
+                continue
+        
+        print(f"🎉 Successfully saved {saved_count}/{len(scheduled_posts)} scheduled posts to Notion!")
+        
+        return {
+            "scheduled_posts": scheduled_posts,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Successfully saved {saved_count}/{len(scheduled_posts)} scheduled posts")
+            ]
+        }
+        
+    except Exception as e:
+        print(f"❌ Failed to save scheduled posts: {e}")
+        return {
+            "scheduled_posts": scheduled_posts,
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=f"Error saving scheduled posts: {str(e)}")
+            ]
+        }
+
+
+
 
 # Build the graph
 graph = StateGraph(AgentState)
