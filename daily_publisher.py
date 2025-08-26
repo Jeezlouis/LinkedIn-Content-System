@@ -7,6 +7,7 @@ from notion_client import Client
 from datetime import datetime, timezone, timedelta
 import os
 import json
+import re
 import time
 import schedule
 from prompt import performance_analyzer
@@ -22,6 +23,54 @@ class DailyAgentState(TypedDict):
 
 # Initialize LLM
 llm = ChatDeepSeek(model="deepseek-chat")
+
+def predict_engagement_score(predictors):
+    """Simple engagement prediction based on post characteristics"""
+    score = 5.0  # Base score
+    
+    # Question posts get higher engagement
+    if predictors["has_question"]:
+        score += 1.5
+    
+    # Numbers and stats are engaging
+    if predictors["has_numbers"]:
+        score += 0.8
+    
+    # Optimal length (150-300 chars for LinkedIn)
+    length = predictors["content_length"]
+    if 150 <= length <= 300:
+        score += 1.0
+    elif 100 <= length <= 500:
+        score += 0.5
+    
+    # Hashtags help discovery
+    if predictors["has_hashtags"]:
+        score += 0.5
+    
+    # Optimal posting times (9-11 AM, 1-3 PM, 5-6 PM)
+    hour = predictors["posting_time"]
+    if hour in [9, 10, 13, 14, 17]:
+        score += 1.0
+    elif hour in [11, 12, 15, 16, 18]:
+        score += 0.5
+    
+    # Tuesday-Thursday are best days
+    day = predictors["posting_day"]
+    if day in [1, 2, 3]:  # Tue, Wed, Thu
+        score += 0.5
+    
+    # Quality score influence
+    score += (predictors["quality_score"] - 5) * 0.3
+    
+    # Content type bonuses
+    content_type = predictors["content_type"]
+    if content_type == "github_project":
+        score += 0.7  # Your audience loves your projects
+    elif content_type == "tutorial":
+        score += 0.5
+    
+    return min(10, max(1, score))  # Keep between 1-10
+
 
 # Improved query logic for daily publisher
 def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
@@ -142,62 +191,289 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
             ]
         }
 
-        
-def select_todays_post(state: DailyAgentState) -> DailyAgentState:
-    """Node 2: Select the best post to publish right now"""
-    print("🎯 STEP 2: Selecting best post for immediate publishing...")
+def get_backup_post(state: DailyAgentState) -> DailyAgentState:
+    """NEW NODE: Get backup evergreen content if no scheduled posts"""
     
     scheduled_posts = state.get("scheduled_posts", [])
+    if scheduled_posts:  # We have posts, no backup needed
+        return state
     
-    if not scheduled_posts:
-        print("ℹ️ No posts scheduled for this time slot")
-        return {
-            "todays_post": {},
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No posts scheduled for publishing at this time")
+    print("🔄 No scheduled posts found, looking for backup content...")
+    
+    try:
+        notion = Client(auth=os.getenv("NOTION_TOKEN"))
+        database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
+        
+        # Look for high-quality evergreen content that can be reposted
+        response = notion.databases.query(
+            database_id=database_id,
+            filter={
+                "and": [
+                    {
+                        "property": "Post Status",
+                        "status": {"equals": "Published"}
+                    },
+                    {
+                        "property": "Content Quality Score",
+                        "number": {"greater_than_or_equal_to": 8}
+                    },
+                    {
+                        "property": "Repost Eligible",  # You'd need to add this field
+                        "checkbox": {"equals": True}
+                    }
+                ]
+            },
+            sorts=[
+                {"property": "Published Date", "direction": "ascending"}  # Oldest first for reposting
             ]
-        }
+        )
+        
+        if response["results"]:
+            backup_post = response["results"][0]  # Take the oldest high-quality post
+            
+            # Extract backup post data
+            properties = backup_post["properties"]
+            backup_data = {
+                "notion_page_id": backup_post["id"],
+                "title": f"[REPOST] {properties.get('Post Title', {}).get('title', [{}])[0].get('text', {}).get('content', '')}",
+                "content": f"Sharing this again because it's still relevant:\n\n{properties.get('Post Content', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')}",
+                "content_type": "repost",
+                "posting_priority": "Low",
+                "quality_score": properties.get("Content Quality Score", {}).get("number", 8),
+                "is_backup": True
+            }
+            
+            print(f"📦 Found backup post: {backup_data['title'][:50]}...")
+            
+            return {
+                "scheduled_posts": [backup_data],
+                "messages": state.get("messages", []) + [
+                    SystemMessage(content="Using backup evergreen content for today")
+                ]
+            }
     
-    # Simple selection logic: Priority > Quality Score > Approval Status
-    best_post = None
-    best_score = -1
+    except Exception as e:
+        print(f"❌ Backup post system failed: {e}")
     
-    for post in scheduled_posts:
+    # Ultimate fallback - motivational/educational evergreen content
+    fallback_content = {
+        "notion_page_id": None,
+        "title": "Daily Development Insight",
+        "content": """🚀 Daily reminder for developers:
+
+The best code you'll ever write is the code that solves real problems for real people.
+
+Focus on:
+✓ Understanding the problem deeply
+✓ Building for your users, not your ego  
+✓ Writing maintainable code
+✓ Learning from every project
+
+What's one lesson you've learned recently that made you a better developer?
+
+#SoftwareDevelopment #CodingLife #TechCommunity""",
+        "content_type": "evergreen",
+        "posting_priority": "Low", 
+        "quality_score": 6,
+        "is_fallback": True
+    }
+    
+    print("🎯 Using fallback evergreen content")
+    
+    return {
+        "scheduled_posts": [fallback_content],
+        "messages": state.get("messages", []) + [
+            SystemMessage(content="Using fallback evergreen content")
+        ]
+    }
+
+def select_todays_post(state: DailyAgentState) -> DailyAgentState:
+    """Improved post selection with more sophisticated scoring"""
+    
+    scheduled_posts = state.get("scheduled_posts", [])
+    if not scheduled_posts:
+        return {"todays_post": {}, "messages": [...]}
+    
+    current_hour = datetime.now().hour
+    
+    def calculate_post_score(post):
+        """Enhanced scoring algorithm"""
         score = 0
         
-        # Priority scoring
+        # Priority scoring (unchanged)
         priority = post.get("posting_priority", "Medium")
         if priority == "High":
-            score += 10
+            score += 15  # Increased weight
         elif priority == "Medium":
-            score += 5
+            score += 8
         
         # Quality score
         score += post.get("quality_score", 5)
         
-        # Approval bonus
-        if post.get("approval_status") == "Approve":
-            score += 2
+        # TIME-BASED SCORING (NEW)
+        scheduled_time = post.get("scheduled_time", "14:00")
+        try:
+            scheduled_hour = int(scheduled_time.split(":")[0])
+            time_diff = abs(current_hour - scheduled_hour)
+            
+            # Perfect timing bonus
+            if time_diff == 0:
+                score += 5
+            elif time_diff == 1:
+                score += 3
+            elif time_diff <= 2:
+                score += 1
+        except:
+            pass
         
-        if score > best_score:
-            best_score = score
-            best_post = post
+        # CONTENT TYPE SCORING (NEW)
+        content_type = post.get("content_type", "")
+        type_scores = {
+            "github_project": 3,    # Your strength
+            "news_article": 2,
+            "tutorial": 4,
+            "commentary": 2
+        }
+        score += type_scores.get(content_type, 1)
+        
+        # ENGAGEMENT POTENTIAL (NEW)
+        # Check if post has engagement triggers
+        content = post.get("content", "")
+        if content.strip().endswith('?'):
+            score += 2
+        if any(trigger in content.lower() for trigger in ['what do you think', 'share your', 'drop a comment']):
+            score += 1
+        
+        return score
     
-    if best_post:
-        print(f"✅ Selected: {best_post.get('title', 'Unknown')[:50]}...")
-        print(f"📊 Priority: {best_post.get('posting_priority')}, Quality: {best_post.get('quality_score')}/10")
-    else:
-        print("⚠️ No suitable post found for publishing")
+    # Sort posts by score
+    scored_posts = [(post, calculate_post_score(post)) for post in scheduled_posts]
+    scored_posts.sort(key=lambda x: x[1], reverse=True)
+    
+    best_post = scored_posts[0][0]
+    best_score = scored_posts[0][1]
+    
+    print(f"✅ Selected: {best_post.get('title', 'Unknown')[:50]}...")
+    print(f"📊 Score: {best_score} | Priority: {best_post.get('posting_priority')} | Quality: {best_post.get('quality_score')}/10")
     
     return {
-        "todays_post": best_post or {},
+        "todays_post": best_post,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Selected post for publishing: {best_post.get('title', 'None') if best_post else 'None'}")
+            SystemMessage(content=f"Selected best post with score {best_score}")
         ]
     }
 
+def select_best_variation(state: DailyAgentState) -> DailyAgentState:
+    """NEW NODE: Choose the best post variation based on current context"""
+    
+    todays_post = state.get("todays_post", {})
+    if not todays_post:
+        return state
+    
+    variations = todays_post.get("variations", {})
+    current_hour = datetime.now().hour
+    current_day = datetime.now().weekday()  # 0=Monday, 6=Sunday
+    
+    # Choose variation based on time/day
+    if current_hour <= 10:  # Morning - Professional tone
+        chosen_variation = variations.get("b", "")  # Personal Experience
+        variation_reason = "Morning audience prefers personal insights"
+    elif current_hour >= 17:  # Evening - Community engagement
+        chosen_variation = variations.get("c", "")  # Community Discussion
+        variation_reason = "Evening is optimal for community discussions"
+    elif current_day >= 5:  # Weekend - More casual
+        chosen_variation = variations.get("c", "")  # Community Discussion
+        variation_reason = "Weekend audience engages more with discussions"
+    else:  # Default business hours
+        chosen_variation = variations.get("a", "")  # News Commentary
+        variation_reason = "Business hours suit professional commentary"
+    
+    # Fallback to main content if variation is empty
+    if not chosen_variation or len(chosen_variation.strip()) < 50:
+        chosen_variation = todays_post.get("content", "")
+        variation_reason = "Using main post content as fallback"
+    
+    # Update the post content
+    updated_post = todays_post.copy()
+    updated_post["content"] = chosen_variation
+    updated_post["variation_used"] = variation_reason
+    
+    print(f"📝 Selected variation: {variation_reason}")
+    
+    return {
+        "todays_post": updated_post,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Selected post variation: {variation_reason}")
+        ]
+    }
+
+
+def upload_image_to_linkedin(image_url, access_token, user_id):
+    """Upload an image to LinkedIn and return the asset URN"""
+    try:
+        import requests
+        
+        # Step 1: Register upload
+        register_url = "https://api.linkedin.com/v2/assets?action=registerUpload"
+        
+        register_headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        register_data = {
+            "registerUploadRequest": {
+                "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+                "owner": f"urn:li:person:{user_id}",
+                "serviceRelationships": [
+                    {
+                        "relationshipType": "OWNER",
+                        "identifier": "urn:li:userGeneratedContent"
+                    }
+                ]
+            }
+        }
+        
+        register_response = requests.post(register_url, headers=register_headers, json=register_data)
+        
+        if register_response.status_code != 200:
+            print(f"⚠️ Failed to register image upload: {register_response.text}")
+            return None
+            
+        register_result = register_response.json()
+        upload_url = register_result["value"]["uploadMechanism"]["com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"]["uploadUrl"]
+        asset_urn = register_result["value"]["asset"]
+        
+        # Step 2: Download image from URL
+        image_response = requests.get(image_url, timeout=30)
+        if image_response.status_code != 200:
+            print(f"⚠️ Failed to download image from {image_url}")
+            return None
+        
+        # Step 3: Upload image binary
+        upload_headers = {
+            "Authorization": f"Bearer {access_token}",
+        }
+        
+        upload_response = requests.post(
+            upload_url, 
+            headers=upload_headers, 
+            data=image_response.content
+        )
+        
+        if upload_response.status_code == 201:
+            print("✅ Image uploaded successfully to LinkedIn")
+            return asset_urn
+        else:
+            print(f"⚠️ Failed to upload image: {upload_response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"⚠️ Image upload error: {e}")
+        return None
+
 def publish_to_linkedin(state: DailyAgentState) -> DailyAgentState:
-    """Node 3: Publish the selected post to LinkedIn"""
+    """Node 3: Actually publish the selected post to LinkedIn with media support"""
     print("🚀 STEP 3: Publishing to LinkedIn...")
     
     todays_post = state.get("todays_post", {})
@@ -207,132 +483,216 @@ def publish_to_linkedin(state: DailyAgentState) -> DailyAgentState:
         return {
             "published_post": {},
             "messages": state.get("messages", []) + [
-                SystemMessage(content="No post to publish today")
+                SystemMessage(content="No post selected for publishing")
             ]
         }
     
-    # TODO: Replace with actual LinkedIn API integration
-    print("📝 SIMULATING LinkedIn publishing...")
-    print(f"🎯 Title: {todays_post.get('title', 'Unknown')}")
-    print(f"📊 Content Preview: {todays_post.get('content', '')[:150]}...")
-    print(f"🏷️ Priority: {todays_post.get('posting_priority')}")
-    
-    # Simulate publishing delay
-    time.sleep(2)
-    
-    # Update Notion to mark as published
     try:
-        notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        notion_page_id = todays_post.get("notion_page_id")
+        import requests
         
-        if notion_page_id:
-            notion.pages.update(
-                page_id=notion_page_id,
-                properties={
-                    "LinkedIn Post Created": {"checkbox": True},
-                    "Post Status": {"status": {"name": "Published"}},
-                    "Published Date": {"date": {"start": datetime.now().date().isoformat()}},
-                    "Published Time": {"rich_text": [{"text": {"content": datetime.now().strftime("%H:%M")}}]},
-                    "Publication Notes": {"rich_text": [{"text": {"content": f"Published successfully at {datetime.now().isoformat()}"}}]}
+        # Get LinkedIn credentials
+        access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
+        user_id = os.getenv('LINKEDIN_USER_ID')
+        
+        if not access_token or not user_id:
+            raise ValueError("Missing LinkedIn credentials: LINKEDIN_ACCESS_TOKEN and LINKEDIN_USER_ID required")
+        
+        post_content = todays_post.get("content", "")
+        
+        # Check for images to include
+        image_urls = []
+        
+        # Get images from various sources
+        if todays_post.get("image_url"):
+            image_urls.append(todays_post["image_url"])
+        elif todays_post.get("images", {}).get("primary_image"):
+            image_urls.append(todays_post["images"]["primary_image"])
+        elif todays_post.get("images", {}).get("readme_images"):
+            image_urls.extend(todays_post["images"]["readme_images"][:1])  # Take first image
+        
+        # Prepare LinkedIn post data
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "X-Restli-Protocol-Version": "2.0.0"
+        }
+        
+        # Base post structure
+        post_data = {
+            "author": f"urn:li:person:{user_id}",
+            "lifecycleState": "PUBLISHED",
+            "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
+        }
+        
+        # Handle media upload if images exist
+        if image_urls:
+            print(f"📸 Uploading {len(image_urls)} image(s) to LinkedIn...")
+            
+            media_assets = []
+            for img_url in image_urls[:1]:  # LinkedIn allows max 1 image per post for UGC
+                asset_urn = upload_image_to_linkedin(img_url, access_token, user_id)
+                if asset_urn:
+                    media_assets.append({
+                        "status": "READY",
+                        "description": {
+                            "text": "Project screenshot"
+                        },
+                        "media": asset_urn,
+                        "title": {
+                            "text": todays_post.get("title", "Project Update")
+                        }
+                    })
+            
+            if media_assets:
+                post_data["specificContent"] = {
+                    "com.linkedin.ugc.ShareContent": {
+                        "shareCommentary": {"text": post_content},
+                        "shareMediaCategory": "IMAGE",
+                        "media": media_assets
+                    }
                 }
-            )
-            print("✅ Updated Notion: Post marked as published")
+                print("✅ Post prepared with media")
+            else:
+                # Fallback to text-only if image upload failed
+                post_data["specificContent"] = {
+                    "com.linkedin.ugc.ShareContent": {
+                        "shareCommentary": {"text": post_content},
+                        "shareMediaCategory": "NONE"
+                    }
+                }
+                print("⚠️ Image upload failed, posting text-only")
+        else:
+            # Text-only post
+            post_data["specificContent"] = {
+                "com.linkedin.ugc.ShareContent": {
+                    "shareCommentary": {"text": post_content},
+                    "shareMediaCategory": "NONE"
+                }
+            }
+            print("📝 Posting text-only content")
         
+        # Make the API call
+        url = "https://api.linkedin.com/v2/ugcPosts"
+        response = requests.post(url, headers=headers, json=post_data)
+        
+        if response.status_code == 201:
+            linkedin_response = response.json()
+            linkedin_post_id = linkedin_response.get("id", f"linkedin_post_{int(time.time())}")
+            
+            # Update Notion with published status
+            if todays_post.get("notion_page_id"):
+                try:
+                    notion = Client(auth=os.getenv("NOTION_TOKEN"))
+                    notion.pages.update(
+                        page_id=todays_post["notion_page_id"],
+                        properties={
+                            "Post Status": {"status": {"name": "Published"}},
+                            "LinkedIn Post Created": {"checkbox": True},
+                            "Published Date": {"date": {"start": datetime.now().date().isoformat()}},
+                            "Actual Publish Time": {"rich_text": [{"text": {"content": datetime.now().strftime("%H:%M")}}]},
+                            "LinkedIn Post ID": {"rich_text": [{"text": {"content": linkedin_post_id}}]}
+                        }
+                    )
+                    print("✅ Updated Notion with published status")
+                except Exception as e:
+                    print(f"⚠️ Failed to update Notion: {e}")
+            
+            published_post_data = {
+                **todays_post,
+                "linkedin_post_id": linkedin_post_id,
+                "actual_publish_time": datetime.now().isoformat(),
+                "post_content": post_content,
+                "media_included": len(image_urls) > 0,
+                "publish_status": "success"
+            }
+            
+            print("✅ Successfully posted to LinkedIn!")
+            print(f"📊 Post ID: {linkedin_post_id}")
+            print(f"📸 Media included: {'Yes' if image_urls else 'No'}")
+            
+            return {
+                "published_post": published_post_data,
+                "messages": state.get("messages", []) + [
+                    SystemMessage(content=f"Successfully published to LinkedIn: {linkedin_post_id}")
+                ]
+            }
+        
+        else:
+            error_msg = f"LinkedIn API error: {response.status_code} - {response.text}"
+            print(f"❌ {error_msg}")
+            
+            return {
+                "published_post": {
+                    **todays_post,
+                    "publish_status": "failed",
+                    "error_message": error_msg
+                },
+                "messages": state.get("messages", []) + [
+                    SystemMessage(content=f"LinkedIn publishing failed: {error_msg}")
+                ]
+            }
+            
     except Exception as e:
-        print(f"⚠️ Failed to update Notion: {e}")
-    
-    # Create published post record
-    published_post = {
-        "linkedin_post_id": f"linkedin_post_{int(time.time())}",  # Would be real LinkedIn ID
-        "published_at": datetime.now().isoformat(),
-        "post_content": todays_post.get("content", ""),
-        "post_title": todays_post.get("title", ""),
-        "content_type": todays_post.get("content_type", ""),
-        "posting_priority": todays_post.get("posting_priority", ""),
-        "quality_score": todays_post.get("quality_score", 5),
-        "notion_page_id": todays_post.get("notion_page_id"),
-        "scheduled_time": todays_post.get("scheduled_time", ""),
-        "actual_publish_time": datetime.now().strftime("%H:%M")
-    }
-    
-    print("🎉 Post successfully published to LinkedIn!")
-    
-    return {
-        "published_post": published_post,
-        "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully published: {todays_post.get('title', 'Unknown post')}")
-        ]
-    }
+        error_msg = f"LinkedIn publishing failed: {str(e)}"
+        print(f"❌ {error_msg}")
+        
+        return {
+            "published_post": {
+                **todays_post,
+                "publish_status": "failed", 
+                "error_message": error_msg
+            },
+            "messages": state.get("messages", []) + [
+                SystemMessage(content=error_msg)
+            ]
+        }
 
 def track_performance(state: DailyAgentState) -> DailyAgentState:
-    """Node 4: Track post performance (initial metrics + setup monitoring)"""
-    print("📊 STEP 4: Setting up performance tracking...")
+    """Enhanced performance tracking with better initial analysis"""
     
     published_post = state.get("published_post", {})
-    
     if not published_post:
-        print("ℹ️ No published post to track")
-        return {
-            "performance_data": {},
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No post performance to track")
-            ]
-        }
+        return state
     
-    # TODO: Replace with actual LinkedIn API metrics
-    print("📈 SIMULATING performance tracking setup...")
-    print(f"🎯 Tracking post: {published_post.get('post_title', 'Unknown')}")
+    # Immediate post analysis (before metrics come in)
+    post_content = published_post.get("post_content", "")
     
-    # Simulate initial performance data
+    # Analyze post characteristics that predict performance
+    performance_predictors = {
+        "has_question": post_content.strip().endswith('?'),
+        "has_numbers": bool(re.search(r'\d+', post_content)),
+        "has_hashtags": '#' in post_content,
+        "content_length": len(post_content),
+        "emoji_count": len(re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]', post_content)),
+        "posting_time": datetime.now().hour,
+        "posting_day": datetime.now().weekday(),
+        "content_type": published_post.get("content_type", ""),
+        "quality_score": published_post.get("quality_score", 5)
+    }
+    
+    # Predict engagement based on characteristics
+    predicted_engagement = predict_engagement_score(performance_predictors)
+    
     performance_data = {
         "linkedin_post_id": published_post.get("linkedin_post_id"),
-        "initial_metrics": {
-            "likes": 0,
-            "comments": 0,
-            "shares": 0,
-            "views": 0,
-            "clicks": 0
-        },
+        "post_characteristics": performance_predictors,
+        "predicted_engagement": predicted_engagement,
         "tracking_started_at": datetime.now().isoformat(),
-        "next_check_at": (datetime.now() + timedelta(hours=1)).isoformat(),
-        "post_details": {
-            "title": published_post.get("post_title", ""),
-            "content_type": published_post.get("content_type", ""),
-            "quality_score": published_post.get("quality_score", 5),
-            "posting_priority": published_post.get("posting_priority", "")
-        },
-        "tracking_schedule": [
-            "1 hour", "6 hours", "24 hours", "3 days", "1 week"
+        "check_schedule": [
+            datetime.now() + timedelta(hours=1),
+            datetime.now() + timedelta(hours=6),
+            datetime.now() + timedelta(hours=24),
+            datetime.now() + timedelta(days=3),
+            datetime.now() + timedelta(days=7)
         ]
     }
     
-    # Update Notion with performance tracking info
-    try:
-        notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        notion_page_id = published_post.get("notion_page_id")
-        
-        if notion_page_id:
-            notion.pages.update(
-                page_id=notion_page_id,
-                properties={
-                    "Performance Tracking": {"checkbox": True},
-                    "Tracking Started": {"date": {"start": datetime.now().date().isoformat()}},
-                    "Initial Likes": {"number": 0},
-                    "Initial Comments": {"number": 0},
-                    "Initial Shares": {"number": 0}
-                }
-            )
-            print("✅ Updated Notion: Performance tracking initialized")
-        
-    except Exception as e:
-        print(f"⚠️ Failed to initialize performance tracking in Notion: {e}")
-    
-    print("📊 Performance tracking setup completed")
+    print(f"📈 Predicted engagement score: {predicted_engagement}/10")
     
     return {
         "performance_data": performance_data,
         "messages": state.get("messages", []) + [
-            SystemMessage(content="Performance tracking initialized for published post")
+            SystemMessage(content=f"Performance tracking initialized with {predicted_engagement}/10 predicted engagement")
         ]
     }
 
@@ -457,11 +817,15 @@ daily_graph.add_node("select_post", select_todays_post)
 daily_graph.add_node("publish_post", publish_to_linkedin)
 daily_graph.add_node("track_performance", track_performance)
 daily_graph.add_node("analyze_performance", analyze_performance_and_learn)
+daily_graph.add_node("get_backup", get_backup_post)
+daily_graph.add_node("select_variation", select_best_variation)
 
 # Define the flow
 daily_graph.add_edge(START, "fetch_scheduled")
-daily_graph.add_edge("fetch_scheduled", "select_post")
-daily_graph.add_edge("select_post", "publish_post")
+daily_graph.add_edge("fetch_scheduled", "get_backup")  # NEW
+daily_graph.add_edge("get_backup", "select_post")
+daily_graph.add_edge("select_post", "select_variation")  # NEW
+daily_graph.add_edge("select_variation", "publish_post")
 daily_graph.add_edge("publish_post", "track_performance")
 daily_graph.add_edge("track_performance", "analyze_performance")
 daily_graph.add_edge("analyze_performance", END)

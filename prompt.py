@@ -171,6 +171,11 @@ Return ONLY valid JSON in this exact format:
         "question_included": true_or_false,
         "personal_experience_shared": true_or_false,
         "technical_insights_provided": true_or_false
+    }},
+    "media_suggestions": {{
+        "image_recommended": true_or_false,
+        "image_description": "description of what image would enhance this post",
+        "visual_elements": ["screenshot", "diagram", "code snippet", "etc"]
     }}
 }}
 
@@ -305,8 +310,15 @@ Return ONLY valid JSON in this exact format:
 Base prediction on: Content quality, topic relevance, timing, historical patterns."""
 
 
-def repo_significance_analyzer(repo_name, commit_messages, diff_summary, repo_description, repo_content_summary, tech_stack):
+def repo_significance_analyzer(repo_name, commit_messages, diff_summary, repo_description, repo_content_summary, tech_stack, images=None):
     """Analyzes repository changes for LinkedIn content potential"""
+    
+    image_context = ""
+    if images and images.get('readme_images'):
+        image_context = f"\nAvailable Images: {images['readme_images'][:3]}"  # Show first 3 images
+    elif images and images.get('primary_image'):
+        image_context = f"\nPrimary Image: {images['primary_image']}"
+    
     return f"""Analyze these repository changes for LinkedIn content potential:
 
 Repository: {repo_name}
@@ -314,7 +326,7 @@ Recent Commits: {commit_messages}
 Code Changes: {diff_summary}
 Project Description: {repo_description}
 Project Content Summary: {repo_content_summary}
-Technologies Used: {tech_stack}
+Technologies Used: {tech_stack}{image_context}
 
 OUTPUT FORMAT:
 Return ONLY valid JSON (no explanations, no markdown). The JSON should look like this:
@@ -328,7 +340,7 @@ Return ONLY valid JSON (no explanations, no markdown). The JSON should look like
   }},
   "technical_insights": ["string", "string"],
   "professional_value": ["string", "string"],
-  "technologies": ["string", "string"]
+  "technologies": ["string", "string"],
   "audience_interest": {{
     "developers": "string",
     "job_seekers": "string",
@@ -342,7 +354,12 @@ Return ONLY valid JSON (no explanations, no markdown). The JSON should look like
   "content_summary": "The summary of the entire project in 2 - 3 sentences",
   "diff_summary": "string",
   "key_hook": "string",
-  "hashtags": ["string", "string"]
+  "hashtags": ["string", "string"],
+  "visual_content": {{
+    "has_images": true_or_false,
+    "image_urls": ["url1", "url2"],
+    "visual_appeal": "description of visual elements that would enhance LinkedIn post"
+  }}
 }}
 
 Focus on: New features, architectural decisions, problem-solving approaches, learning experiences."""
@@ -394,11 +411,12 @@ Scrape timestamp: {timestamp}
 
 INSTRUCTIONS:
 1. Extract all distinct news articles from the content
-2. Return ONLY valid JSON - no explanations, no markdown blocks
-3. If information is missing, use these defaults:
+2. Look for image URLs in the scraped content (img src, featured images, article thumbnails)
+3. Return ONLY valid JSON - no explanations, no markdown blocks
+4. If information is missing, use these defaults:
    - Author: "TLDR"
    - Article URL: "{source_url}"
-   - Image URL: ""
+   - Image URL: "" (but try to find actual image URLs from the content)
    - Source: "TLDR"
 
 REQUIRED OUTPUT FORMAT (return exactly this structure):
@@ -408,10 +426,10 @@ REQUIRED OUTPUT FORMAT (return exactly this structure):
     "title": "Article headline here",
     "summary": "Brief 2-3 sentence summary",
     "publication_date": "2024-01-01",
-    "author": "TLDR",
+    "author": "string",
     "article_url": "{source_url}",
-    "image_url": "",
-    "source": "TLDR",
+    "image_url": "https://example.com/article-image.jpg (extract from img tags, featured images, or thumbnails in the content)",
+    "source": "string",
     "main_topic": "Technology",
     "technologies": ["tech1", "tech2"],
     "content": "First paragraph of article content"

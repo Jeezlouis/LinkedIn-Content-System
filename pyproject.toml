@@ -14,4 +14,6 @@ dependencies = [
     "notion-client>=2.2.1",
     "pygithub>=2.7.0",
     "python-dotenv>=1.0.0",
+    "requests>=2.32.4",
+    "schedule>=1.2.2",
 ]

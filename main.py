@@ -133,7 +133,7 @@ def safe_llm_call(messages, max_retries=3, base_delay=2):
 
 @tool
 def extract_tech_news(url: str, limit: int = 2) -> List[dict]:
-    """Extract news using official FireCrawl Python SDK"""
+    """Extract news using official FireCrawl Python SDK - Enhanced with source tracking"""
     try:
         api_key = os.getenv("FIRECRAWL_API_KEY")
         if not api_key:
@@ -142,21 +142,24 @@ def extract_tech_news(url: str, limit: int = 2) -> List[dict]:
         # Initialize the FireCrawl app
         app = FirecrawlApp(api_key=api_key)
         
-        # Simple scrape without options first
+        # Simple scrape
         result = app.scrape_url(url)
         
-        
-        # Return the result as-is for now to see the structure
+        # Add source URL to result for tracking
         if result:
-            return [result]  # Wrap in list to match expected format
+            if isinstance(result, dict):
+                result['source_url'] = url
+                result['scraped_at'] = datetime.now(timezone.utc).isoformat()
+            return [result]  # Wrap in list
         
         return []
         
     except Exception as e:
-        print(f"Error extracting news data: {e}")
+        print(f"Error extracting news data from {url}: {e}")
         return []
 
-@tool
+
+
 def github_repo_monitor():
     """Hybrid approach: Monitor priority repos + discover active ones"""
 
@@ -241,10 +244,10 @@ def analyze_github_repos(state: AgentState) -> AgentState:
     print("🔍 Entering analyze_github_repos...")
 
     try:
-        github_result = github_repo_monitor.invoke({})  
+        github_result = github_repo_monitor()  # Direct function call, not invoke
         print("📦 github_result keys:", list(github_result.keys()))
     except Exception as e:
-        print(f"❌ github_repo_monitor.invoke failed: {e}")
+        print(f"❌ github_repo_monitor failed: {e}")
         traceback.print_exc()
         return state
 
@@ -277,14 +280,16 @@ def analyze_github_repos(state: AgentState) -> AgentState:
             repo_description = repo_data.get('description', '')
             tech_stack = [repo_data.get('language')] if repo_data.get('language') and repo_data.get('language') != 'Unknown' else []
             
-            # Build prompt
+            # Build prompt with image data
+            images = repo_data.get('images', {})
             system_prompt = repo_significance_analyzer(
                 repo_name=repo_name,
                 commit_messages=commit_messages,
                 repo_content_summary=content,
                 diff_summary=diff_summary,
                 repo_description=repo_description,
-                tech_stack=tech_stack
+                tech_stack=tech_stack,
+                images=images
             )
             print("   ✅ Prompt built successfully")
 
@@ -342,33 +347,80 @@ except Exception as e:
     exit(1)
 
 def scrape_content(state: AgentState) -> AgentState:
-    """Node 1: Scrape content from the web"""
-    print("🔍 STEP 1: Scraping content from TLDR.tech...")
-    url = "https://tldr.tech/"
+    """Node 1: Scrape content from multiple news sources"""
+    print("🔍 STEP 1: Scraping content from multiple sources...")
     
-    try:
-        raw_content = extract_tech_news.invoke({"url": url})
-        print(f"✅ Successfully scraped {len(raw_content)} pages")
-        
-        return {
-            "raw_content": raw_content,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Successfully scraped {len(raw_content)} articles from {url}")
-            ]
+    # MULTIPLE NEWS URLS CONFIGURATION
+    news_sources = [
+        {
+            "url": "https://tldr.tech/",
+            "name": "TLDR Tech",
+            "limit": 1
+        },
+        {
+            "url": "https://sdtimes.com/",
+            "name": "SDtimes", 
+            "limit": 1
+        },
+        {
+            "url": "https://news.ycombinator.com/",
+            "name": "Hacker News",
+            "limit": 1
         }
-    except Exception as e:
-        print(f"❌ Scraping failed: {str(e)}")
-        return {
-            "raw_content": [],
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Error scraping content: {str(e)}")
-            ]
-        }
-
+        # Add more sources as needed:
+        # {
+        #     "url": "https://www.theverge.com/tech",
+        #     "name": "The Verge",
+        #     "limit": 1
+        # }
+    ]
+    
+    all_raw_content = []
+    successful_scrapes = 0
+    failed_scrapes = []
+    
+    for source in news_sources:
+        try:
+            print(f"📰 Scraping {source['name']} ({source['url']})...")
+            
+            raw_content = extract_tech_news.invoke({
+                "url": source['url'], 
+                "limit": source['limit']
+            })
+            
+            if raw_content:
+                # Add source metadata to each scraped item
+                for item in raw_content:
+                    if isinstance(item, dict):
+                        item['source_name'] = source['name']
+                        item['source_url'] = source['url']
+                
+                all_raw_content.extend(raw_content)
+                successful_scrapes += 1
+                print(f"✅ Got {len(raw_content)} items from {source['name']}")
+            else:
+                print(f"⚠️ No content from {source['name']}")
+                failed_scrapes.append(source['name'])
+                
+        except Exception as e:
+            print(f"❌ Failed to scrape {source['name']}: {e}")
+            failed_scrapes.append(f"{source['name']} (Error: {str(e)})")
+            continue
+    
+    print(f"🎉 Scraping Summary: {len(all_raw_content)} items from {successful_scrapes}/{len(news_sources)} sources")
+    if failed_scrapes:
+        print(f"⚠️ Failed sources: {', '.join(failed_scrapes)}")
+    
+    return {
+        "raw_content": all_raw_content,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully scraped {len(all_raw_content)} items from {successful_scrapes}/{len(news_sources)} sources. Failed: {len(failed_scrapes)}")
+        ]
+    }
 
 def extract_structured_news(state: AgentState) -> AgentState:
-    """Node 2: Extract structured information from scraped content - SIMPLIFIED"""
-    print("🧠 STEP 2: Using LLM to extract structured articles...")
+    """Node 2: Extract structured information from multiple scraped sources"""
+    print("🧠 STEP 2: Using LLM to extract structured articles from multiple sources...")
     raw_content = state.get("raw_content", [])
     
     if not raw_content:
@@ -380,117 +432,99 @@ def extract_structured_news(state: AgentState) -> AgentState:
             ]
         }
     
-    # Extract markdown content from ScrapeResponse object
-    if raw_content and len(raw_content) > 0:
-        scrape_response = raw_content[0]
-        if hasattr(scrape_response, 'markdown') and scrape_response.markdown:
-            scraped_content = scrape_response.markdown
-        else:
-            scraped_content = str(scrape_response)
-    else:
-        scraped_content = str(raw_content)
+    all_extracted_articles = []
     
-    # Create the extraction prompt
-    system_prompt = news_extractor(
-        scraped_content=scraped_content,
-        source_url="https://tldr.tech/", 
-        timestamp=datetime.now(timezone.utc).isoformat()
-    )
+    # Process each source separately for better extraction
+    sources_processed = {}
     
-    # Create messages for the LLM
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content="Extract the news articles and return only valid JSON array.")
-    ]
-    
-    try:
-        # Get LLM response
-        print("🤖 Calling LLM for news extraction...")
-        response = llm.invoke(messages)
-        response_text = response.content.strip()
-        
-        # Simple JSON extraction - try multiple methods
-        extracted_articles = None
-        
-        # Method 1: Try direct JSON parsing
+    for item in raw_content:
         try:
-            extracted_articles = json.loads(response_text)
-        except:
-            pass
-        
-        # Method 2: Remove code blocks and try again
-        if not extracted_articles:
-            try:
-                clean_text = re.sub(r'```[a-z]*\n?', '', response_text)
-                clean_text = re.sub(r'\n```', '', clean_text)
-                extracted_articles = json.loads(clean_text.strip())
-            except:
-                pass
-        
-        # Method 3: Find JSON array in text
-        if not extracted_articles:
-            try:
-                start = response_text.find('[')
-                end = response_text.rfind(']') + 1
-                if start >= 0 and end > start:
-                    json_text = response_text[start:end]
-                    extracted_articles = json.loads(json_text)
-            except:
-                pass
-        
-        # Ensure it's a list
-        if extracted_articles and not isinstance(extracted_articles, list):
-            extracted_articles = [extracted_articles]
-        
-        # If all methods failed, create fallback
-        if not extracted_articles:
-            print("⚠️ JSON parsing failed, creating fallback article")
-            extracted_articles = [{
-                "title": "Extraction Error - JSON Parse Failed",
-                "summary": "Could not parse the article content properly",
-                "publication_date": datetime.now(timezone.utc).date().isoformat(),
-                "author": "TLDR",
-                "article_url": "https://tldr.tech/",
-                "image_url": "",
-                "source": "TLDR",
-                "main_topic": "Technology",
-                "technologies": [],
-                "content": response_text[:300] + "..." if len(response_text) > 300 else response_text
-            }]
-        
-        print(f"✅ Successfully extracted {len(extracted_articles)} articles")
-        
-        return {
-            "extracted_articles": extracted_articles,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Successfully extracted {len(extracted_articles)} structured articles")
-            ]
-        }
-        
-    except Exception as e:
-        print(f"❌ Extraction failed: {str(e)}")
-        
-        # Return fallback data
-        fallback_articles = [{
-            "title": "System Error - Extraction Failed",
-            "summary": f"Error occurred during extraction: {str(e)}",
-            "publication_date": datetime.now(timezone.utc).date().isoformat(),
-            "author": "TLDR",
-            "article_url": "https://tldr.tech/",
-            "image_url": "",
-            "source": "TLDR",
-            "main_topic": "Technology",
-            "technologies": [],
-            "content": "System error prevented content extraction"
-        }]
-        
-        return {
-            "extracted_articles": fallback_articles,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Error in news extraction: {str(e)}")
-            ]
-        }
+            # Handle both dict and ScrapeResponse objects
+            if hasattr(item, 'metadata'):
+                # FireCrawl ScrapeResponse object
+                source_url = getattr(item, 'source_url', item.metadata.get('sourceURL', 'Unknown'))
+                source_name = getattr(item, 'source_name', 'Unknown')
+            else:
+                # Regular dict
+                source_url = item.get('source_url', 'Unknown')
+                source_name = item.get('source_name', 'Unknown')
+            
+            # Group by source for batch processing
+            if source_url not in sources_processed:
+                sources_processed[source_url] = {
+                    'name': source_name,
+                    'items': []
+                }
+            sources_processed[source_url]['items'].append(item)
+            
+        except Exception as e:
+            print(f"⚠️ Error processing raw content item: {e}")
+            continue
     
+    # Process each source group
+    for source_url, source_data in sources_processed.items():
+        try:
+            print(f"🔄 Processing {len(source_data['items'])} items from {source_data['name']}...")
+            
+            # Combine content from same source
+            combined_content = ""
+            for item in source_data['items']:
+                if hasattr(item, 'markdown') and item.markdown:
+                    combined_content += f"\n--- Content from {source_data['name']} ---\n{item.markdown}\n"
+                elif hasattr(item, 'content') and item.content:
+                    combined_content += f"\n--- Content from {source_data['name']} ---\n{item.content}\n"
+                else:
+                    combined_content += f"\n--- Content from {source_data['name']} ---\n{str(item)}\n"
+            
+            # Create the extraction prompt with source-specific information
+            system_prompt = news_extractor(
+                scraped_content=combined_content,
+                source_url=source_url,
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
+            
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=f"Extract the news articles from {source_data['name']} and return only valid JSON array.")
+            ]
+            
+            # Get LLM response
+            response = llm.invoke(messages)
+            response_text = response.content.strip()
+            
+            # Parse JSON (using your existing robust parsing)
+            extracted_articles = robust_json_parse(response_text)
+            
+            if extracted_articles and isinstance(extracted_articles, list):
+                # Add source metadata to each article
+                for article in extracted_articles:
+                    if isinstance(article, dict):
+                        article['original_source_name'] = source_data['name']
+                        article['original_source_url'] = source_url
+                        # Ensure source field is set
+                        if not article.get('source'):
+                            article['source'] = source_data['name']
+                
+                all_extracted_articles.extend(extracted_articles)
+                print(f"✅ Extracted {len(extracted_articles)} articles from {source_data['name']}")
+                
+            else:
+                print(f"⚠️ No valid articles extracted from {source_data['name']}")
+                
+        except Exception as e:
+            print(f"❌ Failed to extract from {source_data['name']}: {e}")
+            continue
+    
+    print(f"🎉 Total articles extracted: {len(all_extracted_articles)} from {len(sources_processed)} sources")
+    
+    return {
+        "extracted_articles": all_extracted_articles,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Successfully extracted {len(all_extracted_articles)} structured articles from {len(sources_processed)} sources")
+        ]
+    }
+
+
 def analyze_relevance(state: AgentState) -> AgentState:
     """Node 3: This node analyzes the relevance of each article"""
     extracted_articles = state.get("extracted_articles", [])
@@ -749,6 +783,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
             raise ValueError("Missing DATABASE_ID in environment variables")
             
         saved_count = 0
+        sources_summary = {}  # Initialize sources summary tracking
         print(f"📝 Attempting to save {len(articles)} articles...")
         
         for article in articles:
@@ -765,6 +800,10 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                 if isinstance(relevance_analysis, dict):
                     relevance_score = relevance_analysis.get("relevance_score", 5)
                 
+                source_name = article.get("original_source_name", article.get("source", "Unknown"))
+                if source_name not in sources_summary:
+                    sources_summary[source_name] = {"attempted": 0, "saved": 0}
+                sources_summary[source_name]["attempted"] += 1
                 # Build properties safely - MATCHING YOUR ACTUAL DATABASE FIELDS
                 properties = {
                     "Title": {
@@ -772,6 +811,9 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                     },
                     "URL": {
                         "url": article.get("article_url", "") if article.get("article_url", "").startswith("http") else ""
+                    },
+                    "Original Source URL": {
+                        "url": article.get("original_source_url", "") if article.get("original_source_url", "").startswith("http") else ""
                     },
                     "Source": {
                         "rich_text": [{"text": {"content": safe_text(article.get("source"))}}]
@@ -1954,7 +1996,7 @@ def scheduling_optimizer_agent(state: AgentState) -> AgentState:
     }
 
 def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
-    """NEW Node: Save scheduled posts to Notion with timing and priority data"""
+    """Enhanced Node: Save scheduled posts to Notion with high priority fields"""
     print("💾 STEP 13: Saving scheduled posts to Notion...")
     
     scheduled_posts = state.get("scheduled_posts", [])
@@ -1985,6 +2027,176 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
         clean_text = " ".join(clean_text.split())
         return clean_text[:max_length] if len(clean_text) > max_length else clean_text
     
+    def clean_multi_select(items, max_items=10):
+        """Clean and prepare items for Notion multi_select"""
+        if not items or not isinstance(items, list):
+            return []
+        
+        clean_items = []
+        for item in items[:max_items]:
+            if item and str(item).strip():
+                clean_item = str(item).strip().replace(",", " -").replace("#", "")[:100]
+                if clean_item:
+                    clean_items.append({"name": clean_item})
+        return clean_items
+
+    def extract_hashtags_from_content(post_content):
+        """Extract hashtags from post content"""
+        import re
+        hashtags = re.findall(r'#\w+', post_content)
+        return [tag.replace('#', '') for tag in hashtags]
+
+    def enhance_notion_properties(post, base_properties):
+        """Add high priority missing fields"""
+        base_post = post.get("base_post", {})
+        post_content = safe_text(base_post.get("post_content", ""))
+        post_structure = base_post.get("post_structure", {})
+        source_data = post.get("source_data", {})
+        
+        # 1. HIGH PRIORITY: Hook/Opening Line
+        hook_text = ""
+        # Try to get from post structure first
+        if post_structure.get("hook"):
+            hook_text = safe_text(post_structure.get("hook", ""))
+        else:
+            # Extract first line as hook
+            first_line = post_content.split('\n')[0].strip()
+            if first_line and len(first_line) > 10:  # Only if substantial
+                hook_text = first_line
+        
+        if hook_text:
+            base_properties["Hook"] = {
+                "rich_text": [{"text": {"content": hook_text[:300]}}]  # Notion limit
+            }
+        
+        # 2. HIGH PRIORITY: Call to Action (always try to extract)
+        cta_text = ""
+        if post_structure.get("call_to_action"):
+            cta_text = safe_text(post_structure.get("call_to_action", ""))
+        else:
+            # Look for common CTA patterns in the post
+            cta_patterns = [
+                "What do you think?",
+                "Share your thoughts",
+                "Drop a comment", 
+                "Let me know",
+                "Thoughts?"
+            ]
+            for pattern in cta_patterns:
+                if pattern.lower() in post_content.lower():
+                    cta_text = pattern
+                    break
+        
+        base_properties["Call to Action"] = {
+            "rich_text": [{"text": {"content": cta_text}}]
+        }
+        
+        # 3. HIGH PRIORITY: Hashtags (extract from multiple sources)
+        all_hashtags = []
+        
+        # From base_post hashtags
+        base_hashtags = base_post.get("hashtags", [])
+        if base_hashtags:
+            all_hashtags.extend(base_hashtags)
+        
+        # From post content
+        content_hashtags = extract_hashtags_from_content(post_content)
+        if content_hashtags:
+            all_hashtags.extend(content_hashtags)
+        
+        # From variations (check all variations for hashtags)
+        variations = post.get("variations", {})
+        if isinstance(variations, dict):
+            variations_data = variations.get("variations", {})
+            if isinstance(variations_data, dict):
+                for variant_key, variant_data in variations_data.items():
+                    if isinstance(variant_data, dict):
+                        variant_content = variant_data.get("content", "")
+                        if variant_content:
+                            variant_hashtags = extract_hashtags_from_content(variant_content)
+                            all_hashtags.extend(variant_hashtags)
+        
+        # Clean and deduplicate hashtags
+        unique_hashtags = list(set(all_hashtags))  # Remove duplicates
+        if unique_hashtags:
+            clean_hashtags = clean_multi_select(unique_hashtags)
+            if clean_hashtags:
+                base_properties["Hashtags"] = {"multi_select": clean_hashtags}
+        
+        # 4. HIGH PRIORITY: Target Audience (from your existing logic)
+        content_type = post.get("content_type", "unknown")
+        audience_options = []
+        
+        if content_type == "github_project":
+            audience_options = [{"name": "Developers"}, {"name": "Tech Enthusiasts"}]
+        elif content_type == "news_article":
+            audience_options = [{"name": "Developers"}, {"name": "Founders"}, {"name": "Tech Enthusiasts"}]
+        else:
+            audience_options = [{"name": "Tech Enthusiasts"}]
+        
+        if audience_options:
+            base_properties["Target Audience"] = {"multi_select": audience_options}
+        
+        # 5. HIGH PRIORITY: Source URL (always try to add)
+        source_url = ""
+        if isinstance(source_data, dict):
+            source_url = source_data.get("article_url") or source_data.get("repo_url", "")
+        
+        if source_url and source_url.startswith("http"):
+            base_properties["Source URL"] = {"url": source_url}
+        
+        # 6. HIGH PRIORITY: Image URL (always try to add)
+        image_url = ""
+        if isinstance(source_data, dict):
+            image_url = source_data.get("image_url", "")
+        
+        if image_url and image_url.startswith("http"):
+            base_properties["Image URL"] = {"url": image_url}
+        
+        # 7. HIGH PRIORITY: Hook Strength (make it dynamic based on content analysis)
+        hook_strength = 7  # default
+        
+        # Analyze hook strength based on various factors
+        if hook_text:
+            # Simple scoring based on engagement triggers
+            strength_factors = 0
+            
+            # Question hooks are strong
+            if hook_text.strip().endswith('?'):
+                strength_factors += 2
+                
+            # Numbers and stats are engaging  
+            import re
+            if re.search(r'\d+', hook_text):
+                strength_factors += 1
+                
+            # Emotional words
+            emotional_words = ['shocking', 'amazing', 'incredible', 'game-changing', 'revolutionary']
+            if any(word in hook_text.lower() for word in emotional_words):
+                strength_factors += 1
+                
+            # Controversy or strong statements
+            strong_words = ['never', 'always', 'everyone', 'nobody', 'best', 'worst']
+            if any(word in hook_text.lower() for word in strong_words):
+                strength_factors += 1
+                
+            # Adjust score
+            hook_strength = min(10, 6 + strength_factors)  # Cap at 10
+        
+        base_properties["Hook Strength"] = {"number": hook_strength}
+        
+        # 8. HIGH PRIORITY: Has Question (engagement trigger)
+        has_question = (
+            post_content.strip().endswith('?') or 
+            any(phrase in post_content.lower() for phrase in [
+                'what do you think', 'thoughts?', 'agree?', 'what about you',
+                'share your', 'let me know', 'drop a comment'
+            ])
+        )
+        base_properties["Has Question"] = {"checkbox": has_question}
+        
+        return base_properties
+    
     try:
         notion = Client(auth=os.getenv("NOTION_TOKEN"))
         database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
@@ -1996,7 +2208,7 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
         
         for post in scheduled_posts:
             try:
-                # Extract all the data
+                # Extract all the existing data
                 source_title = safe_text(post.get("source_title", "Unknown"))
                 base_post = post.get("base_post", {})
                 post_content = safe_text(base_post.get("post_content", ""), max_length=1900)
@@ -2022,7 +2234,7 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                     scheduled_date = datetime.now().date().isoformat()
                     scheduled_time = "14:00"
                 
-                # Build properties for Notion
+                # Build BASE properties for Notion (existing fields)
                 properties = {
                     "Post Title": {
                         "title": [{"text": {"content": source_title[:100]}}]
@@ -2031,7 +2243,7 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                         "rich_text": [{"text": {"content": post_content}}]
                     },
                     "Post Status": {
-                        "status": {"name": "Scheduled"}  # NEW STATUS
+                        "status": {"name": "Scheduled"}
                     },
                     "Scheduled Date": {
                         "date": {"start": scheduled_date}
@@ -2061,7 +2273,7 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                         "date": {"start": datetime.now().date().isoformat()}
                     },
                     "LinkedIn Post Created": {
-                        "checkbox": False  # Will be set to True after actual publishing
+                        "checkbox": False
                     }
                 }
                 
@@ -2072,7 +2284,10 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                 engagement_potential = safe_select_text(post.get("engagement_potential", "Medium"))
                 properties["Engagement Potential"] = {"select": {"name": engagement_potential}}
                 
-                # Add variations if they exist
+                # ENHANCE with high priority fields
+                properties = enhance_notion_properties(post, properties)
+                
+                # Add variations if they exist (existing logic)
                 variations = post.get("variations", {})
                 if isinstance(variations, dict):
                     variations_data = variations.get("variations", {})
@@ -2095,18 +2310,18 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                 )
                 
                 saved_count += 1
-                print(f"✅ Saved scheduled post: {source_title[:50]}... (Priority: {posting_priority}, Date: {scheduled_date} {scheduled_time})")
+                print(f"✅ Saved enhanced post: {source_title[:50]}... (Priority: {posting_priority}, Hook Strength: {properties.get('Hook Strength', {}).get('number', 'N/A')}, Has Question: {properties.get('Has Question', {}).get('checkbox', False)})")
                 
             except Exception as post_error:
                 print(f"❌ Failed to save scheduled post: {post_error}")
                 continue
         
-        print(f"🎉 Successfully saved {saved_count}/{len(scheduled_posts)} scheduled posts to Notion!")
+        print(f"🎉 Successfully saved {saved_count}/{len(scheduled_posts)} enhanced posts to Notion!")
         
         return {
             "scheduled_posts": scheduled_posts,
             "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Successfully saved {saved_count}/{len(scheduled_posts)} scheduled posts")
+                SystemMessage(content=f"Successfully saved {saved_count}/{len(scheduled_posts)} enhanced scheduled posts")
             ]
         }
         
@@ -2118,7 +2333,6 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                 SystemMessage(content=f"Error saving scheduled posts: {str(e)}")
             ]
         }
-
 
 
 
@@ -2164,10 +2378,13 @@ app = graph.compile()
 # Enhanced run function with better progress indicators
 
 def run_weekly_content_generation():
-    """Enhanced weekly content generation with review and scheduling"""
+    """Enhanced weekly content generation with comprehensive tracking and fallbacks"""
     print("🚀 ENHANCED WEEKLY CONTENT PIPELINE")
     print("🎯 Content Generation → Strategy → Review → Scheduling")
     print("=" * 60)
+    
+    # Track execution time
+    start_time = datetime.now()
     
     initial_state = {
         "messages": [],
@@ -2182,52 +2399,228 @@ def run_weekly_content_generation():
     }
     
     try:
+        # Execute the full pipeline
         result = app.invoke(initial_state)
+        
+        # Calculate execution metrics
+        end_time = datetime.now()
+        execution_time = end_time - start_time
         
         print("\n" + "=" * 60)
         print("✅ WEEKLY PIPELINE COMPLETED SUCCESSFULLY!")
         print("=" * 60)
         
-        # Show comprehensive results
-        print(f"📊 Total Messages: {len(result['messages'])}")
-        print(f"📰 Articles Processed: {len(result.get('analyzed_articles', []))}")
-        print(f"🔄 Repos Processed: {len(result.get('github_data', []))}")
-        print(f"🎯 Strategic Content: {len(result.get('analyzed_content', []))}")
-        print(f"✍️ Posts Generated: {len(result.get('linkedin_posts', []))}")
-        print(f"🔍 Posts Reviewed: {len(result.get('reviewed_posts', []))}")
-        print(f"⏰ Posts Scheduled: {len(result.get('scheduled_posts', []))}")
+        # Comprehensive results summary
+        articles_processed = len(result.get('analyzed_articles', []))
+        repos_processed = len(result.get('github_data', []))
+        strategic_content = len(result.get('analyzed_content', []))
+        posts_generated = len(result.get('linkedin_posts', []))
+        posts_reviewed = len(result.get('reviewed_posts', []))
+        posts_scheduled = len(result.get('scheduled_posts', []))
+
+        # source_breakdown = {}
+        # for article in articles:
+        #     source = article.get('original_source_name', article.get('source', 'Unknown'))
+        #     source_breakdown[source] = source_breakdown.get(source, 0) + 1
         
-        # Show scheduling summary
+        
+        print(f"⏱️  Execution Time: {execution_time}")
+        print(f"📊 Processing Summary:")
+        print(f"   📰 Articles Processed: {articles_processed}")
+        print(f"   🔧 Repos Analyzed: {repos_processed}")
+        print(f"   🎯 Strategic Content Items: {strategic_content}")
+        print(f"   ✍️  Posts Generated: {posts_generated}")
+        print(f"   📋 Posts Reviewed: {posts_reviewed}")
+        print(f"   ⏰ Posts Scheduled: {posts_scheduled}")
+        
+        # Quality metrics
+        approved_posts = [p for p in result.get('reviewed_posts', []) if p.get('approval_status') == 'Approve']
+        high_priority_posts = [p for p in result.get('scheduled_posts', []) if p.get('posting_priority') == 'High']
+        avg_quality = sum(p.get('final_quality_score', 7) for p in result.get('reviewed_posts', [])) / max(len(result.get('reviewed_posts', [])), 1)
+        
+        print(f"\n📈 Quality Metrics:")
+        print(f"   ✅ Approval Rate: {len(approved_posts)}/{posts_reviewed} ({len(approved_posts)/max(posts_reviewed, 1)*100:.1f}%)")
+        print(f"   🔥 High Priority Posts: {len(high_priority_posts)}")
+        print(f"   ⭐ Average Quality Score: {avg_quality:.1f}/10")
+        
+        # Scheduling breakdown
         scheduled_posts = result.get('scheduled_posts', [])
         if scheduled_posts:
             print(f"\n📅 SCHEDULED POSTS READY FOR DAILY PUBLISHING:")
-            high_priority = [p for p in scheduled_posts if p.get('posting_priority') == 'High']
-            medium_priority = [p for p in scheduled_posts if p.get('posting_priority') == 'Medium']
             
-            print(f"   🔥 High Priority: {len(high_priority)} posts")
-            print(f"   📈 Medium Priority: {len(medium_priority)} posts")
-            print(f"   📅 Date Range: Next {len(scheduled_posts)} days")
+            # Group by priority
+            priority_breakdown = {}
+            for post in scheduled_posts:
+                priority = post.get('posting_priority', 'Medium')
+                priority_breakdown[priority] = priority_breakdown.get(priority, 0) + 1
             
-            for i, post in enumerate(scheduled_posts[:3], 1):  # Show first 3
+            for priority, count in priority_breakdown.items():
+                print(f"   {priority} Priority: {count} posts")
+            
+            # Show next few scheduled posts
+            print(f"\n📋 Next {min(5, len(scheduled_posts))} Scheduled Posts:")
+            for i, post in enumerate(scheduled_posts[:5], 1):
                 scheduled_dt = post.get('scheduled_datetime', 'Unknown')
+                title = post.get('source_title', 'Unknown')
+                priority = post.get('posting_priority', 'Medium')
+                
                 try:
                     dt = datetime.fromisoformat(scheduled_dt.replace('Z', '+00:00'))
-                    date_str = dt.strftime('%m/%d %H:%M')
+                    date_str = dt.strftime('%m/%d %H:%M UTC')
                 except:
                     date_str = 'Unknown'
                     
-                print(f"   {i}. {post.get('source_title', 'Unknown')[:40]}... → {date_str}")
+                print(f"   {i}. [{priority}] {title[:45]}... → {date_str}")
         
-        print(f"\n🎉 Ready for daily publishing! Check your Notion database.")
+        # Success rate analysis
+        success_metrics = {
+            "scraping_success": len(result.get('raw_content', [])) > 0,
+            "extraction_success": articles_processed > 0,
+            "github_analysis_success": repos_processed > 0,
+            "content_generation_success": posts_generated > 0,
+            "scheduling_success": posts_scheduled > 0
+        }
+        
+        successful_stages = sum(success_metrics.values())
+        total_stages = len(success_metrics)
+        
+        print(f"\n🎯 Pipeline Success Rate: {successful_stages}/{total_stages} stages ({successful_stages/total_stages*100:.1f}%)")
+        
+        # Warnings and recommendations
+        warnings = []
+        if articles_processed == 0:
+            warnings.append("⚠️  No articles were processed - check news sources")
+        if repos_processed == 0:
+            warnings.append("⚠️  No GitHub repos analyzed - check repo activity")
+        if posts_scheduled < 3:
+            warnings.append("⚠️  Low content output - may need more sources")
+        if avg_quality < 6:
+            warnings.append("⚠️  Low average quality score - review content strategy")
+            
+        if warnings:
+            print(f"\n⚠️  Warnings:")
+            for warning in warnings:
+                print(f"   {warning}")
+        
+        # Save execution summary to a log (optional)
+        execution_summary = {
+            "timestamp": end_time.isoformat(),
+            "execution_time_seconds": execution_time.total_seconds(),
+            "articles_processed": articles_processed,
+            "repos_processed": repos_processed,
+            "posts_generated": posts_generated,
+            "posts_scheduled": posts_scheduled,
+            "average_quality_score": avg_quality,
+            "success_rate": successful_stages / total_stages,
+            "warnings": warnings
+        }
+        
+        # Optional: Save to file or database for tracking
+        # with open(f"weekly_run_{end_time.strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
+        #     json.dump(execution_summary, f, indent=2)
+        
+        print(f"\n🎉 Weekly content generation completed successfully!")
+        print(f"📝 Ready for daily publishing pipeline to take over.")
+        
         return result
         
     except Exception as e:
-        print(f"\n❌ WEEKLY PIPELINE FAILED: {str(e)}")
+        end_time = datetime.now()
+        execution_time = end_time - start_time
+        
+        print(f"\n❌ WEEKLY PIPELINE FAILED after {execution_time}")
+        print(f"💥 Error: {str(e)}")
+        
+        # Try to provide partial results if available
+        try:
+            partial_result = app.get_graph().get_state() if hasattr(app, 'get_graph') else None
+            if partial_result:
+                print("📊 Partial results available for debugging")
+        except:
+            pass
+            
         import traceback
+        print(f"\n🔍 Full error trace:")
         traceback.print_exc()
+        
+        # Return error information for debugging
+        return {
+            "error": str(e),
+            "execution_time": execution_time.total_seconds(),
+            "timestamp": end_time.isoformat(),
+            "status": "failed"
+        }
+
+def schedule_weekly_content_generation():
+    """Schedule weekly content generation with automatic retry logic"""
+    import schedule
+    import time
+    
+    def run_with_retry():
+        """Run weekly generation with retry logic"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 Weekly content generation attempt {attempt + 1}/{max_retries}")
+                result = run_weekly_content_generation()
+                
+                if result and not result.get('error'):
+                    print("✅ Weekly generation successful!")
+                    return result
+                else:
+                    print(f"❌ Attempt {attempt + 1} failed")
+                    
+            except Exception as e:
+                print(f"💥 Attempt {attempt + 1} crashed: {e}")
+                
+            if attempt < max_retries - 1:
+                print("⏳ Waiting 30 minutes before retry...")
+                time.sleep(1800)  # Wait 30 minutes
+        
+        print("❌ All retry attempts failed!")
         return None
+    
+    # Schedule weekly runs
+    schedule.every().sunday.at("08:00").do(run_with_retry)  # Sunday morning
+    schedule.every().wednesday.at("20:00").do(run_with_retry)  # Mid-week backup
+    
+    print("📅 Weekly content generation scheduled:")
+    print("   - Primary: Sunday 8:00 AM")
+    print("   - Backup: Wednesday 8:00 PM")
+    print("   - Auto-retry: Up to 3 attempts with 30min delays")
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(3600)  # Check every hour
 
+# Enhanced manual execution with options
+def run_weekly_with_options(skip_github=False, skip_news=False, test_mode=False):
 
+    """Run weekly generation with optional component skipping"""
+    
+    if test_mode:
+        print("🧪 RUNNING IN TEST MODE - Limited processing")
+    
+    # Modify initial state based on options
+    initial_state = {
+        "messages": [],
+        "raw_content": [] if skip_news else [],
+        "extracted_articles": [],
+        "analyzed_articles": [],
+        "github_data": [] if skip_github else [],
+        "analyzed_content": [],
+        "linkedin_posts": [],
+        "reviewed_posts": [],
+        "scheduled_posts": []
+    }
+    
+    # In test mode, you might want to limit API calls
+    if test_mode:
+        # Could modify LLM settings, limit iterations, etc.
+        pass
+    
+    return run_weekly_content_generation()
 
-if __name__ == "__main__":
-    run_weekly_content_generation()
+if __name__ == '__main__':
+     run_weekly_content_generation()
