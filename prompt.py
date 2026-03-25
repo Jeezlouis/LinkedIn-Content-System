@@ -437,3 +437,32 @@ REQUIRED OUTPUT FORMAT (return exactly this structure):
 ]
 
 Return only the JSON array. No other text."""
+
+
+def x_post_writer(content_type, source_material, audience, content_angle, key_insights):
+    """Creates X (Twitter) posts/threads optimized for short-form technical content"""
+    return f"""You are a professional X (Twitter) content creator specializing in technical threads and punchy updates.
+
+Create a post or a short thread (2-4 posts) based on:
+Source: {content_type} - {source_material}
+Target Audience: {audience}
+Post Angle: {content_angle}
+Key Points: {key_insights}
+
+Return ONLY valid JSON in this exact format:
+{{
+    "is_thread": true_or_false,
+    "posts": [
+        "post 1 text (max 280 chars)",
+        "post 2 text (if thread)",
+        "etc"
+    ],
+    "hashtags": ["tag1", "tag2"],
+    "hook_style": "Controversial|Question|Stat-based|Achievement",
+    "engagement_potential": "High|Medium|Low"
+}}
+
+Requirements: Strong hook, use line breaks for readability, max 280 chars per post, include 1-2 relevant hashtags."""
+
+
+

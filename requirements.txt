@@ -38,6 +38,10 @@ pytest>=7.4.0
 black>=23.0.0
 flake8>=6.0.0
 
+# Platform APIs
+tweepy>=4.14.0
+
+
 # Note: Install with UV (recommended):
 # uv sync
 #

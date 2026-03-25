@@ -14,15 +14,18 @@ from prompt import performance_analyzer
 
 load_dotenv()
 
+import tweepy # For X integration
+
 class DailyAgentState(TypedDict):
     messages: List[BaseMessage]
     scheduled_posts: List[dict]
-    todays_post: dict
-    published_post: dict
+    todays_posts: List[dict] # Support multi-platform
+    published_posts: List[dict]
     performance_data: dict
 
 # Initialize LLM
 llm = ChatDeepSeek(model="deepseek-chat")
+
 
 def predict_engagement_score(predictors):
     """Simple engagement prediction based on post characteristics"""
@@ -74,122 +77,63 @@ def predict_engagement_score(predictors):
 
 # Improved query logic for daily publisher
 def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
-    """Node 1: Fetch posts scheduled for today from Notion - IMPROVED VERSION"""
-    print("📅 STEP 1: Fetching posts scheduled for today...")
+    """Node 1: Fetch posts for all platforms scheduled for today"""
+    print("📅 STEP 1: Fetching posts scheduled for today across all platforms...")
     
-    try:
-        notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        database_id = os.getenv("LINKEDIN_POSTS_DATABASE_ID")
+    notion = Client(auth=os.getenv("NOTION_TOKEN"))
+    platforms = [
+        {"name": "LinkedIn", "db_id": os.getenv("LINKEDIN_POSTS_DATABASE_ID")},
+        {"name": "X", "db_id": os.getenv("X_POSTS_DATABASE_ID")}
+    ]
+    
+    today = datetime.now().date().isoformat()
+    current_hour = datetime.now().hour
+    all_scheduled = []
+
+    for platform in platforms:
+        db_id = platform["db_id"]
+        if not db_id: continue
         
-        today = datetime.now().date().isoformat()
-        current_hour = datetime.now().hour
-        
-        # More flexible query - get all posts for today that haven't been published
-        response = notion.databases.query(
-            database_id=database_id,
-            filter={
-                "and": [
-                    {
-                        "property": "Post Status",
-                        "status": {"equals": "Scheduled"}
-                    },
-                    {
-                        "property": "Scheduled Date",
-                        "date": {"equals": today}
-                    },
-                    {
-                        "property": "LinkedIn Post Created", 
-                        "checkbox": {"equals": False}
-                    },
-                    {
-                        "property": "Ready for Publishing",
-                        "checkbox": {"equals": True}
-                    }
-                ]
-            },
-            sorts=[
-                {
-                    "property": "Posting Priority",
-                    "direction": "descending"
-                },
-                {
-                    "property": "Content Quality Score",
-                    "direction": "descending"
-                },
-                {
-                    "property": "Scheduled Time",  # Add time-based sorting
-                    "direction": "ascending"
+        print(f"🔍 Checking {platform['name']} database...")
+        try:
+            # Query Logic (simplified for multi-platform)
+            response = notion.databases.query(
+                database_id=db_id,
+                filter={
+                    "and": [
+                        {"property": "Post Status", "status": {"equals": "Scheduled"}},
+                        {"property": "Scheduled Date", "date": {"equals": today}},
+                        {"property": "Ready for Publishing", "checkbox": {"equals": True}}
+                    ]
                 }
-            ]
-        )
-        
-        scheduled_posts = []
-        for page in response["results"]:
-            properties = page["properties"]
-            
-            # Get scheduled time
-            scheduled_time_text = properties.get("Scheduled Time", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "14:00")
-            
-            # Parse scheduled time
-            try:
-                scheduled_hour = int(scheduled_time_text.split(":")[0])
-            except:
-                scheduled_hour = 14  # Default to 2 PM
-            
-            # IMPROVED LOGIC: More flexible time window
-            time_diff = abs(current_hour - scheduled_hour)
-            
-            # Include posts if:
-            # 1. Exact hour match, OR
-            # 2. Within 2 hours and high priority, OR  
-            # 3. Past due (missed posts), OR
-            # 4. No other posts found and it's after 9 AM
-            priority = properties.get("Posting Priority", {}).get("select", {}).get("name", "Medium")
-            
-            should_include = (
-                time_diff == 0 or  # Exact time
-                (time_diff <= 2 and priority == "High") or  # High priority with wider window
-                (current_hour > scheduled_hour and current_hour - scheduled_hour <= 6) or  # Past due but not too old
-                (len(scheduled_posts) == 0 and current_hour >= 9)  # Fallback for morning posts
             )
             
-            if should_include:
-                post_data = {
+            for page in response["results"]:
+                props = page["properties"]
+                post = {
+                    "platform": platform["name"].lower(),
                     "notion_page_id": page["id"],
-                    "title": properties.get("Post Title", {}).get("title", [{}])[0].get("text", {}).get("content", ""),
-                    "content": properties.get("Post Content", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
-                    "content_type": properties.get("Content Type", {}).get("select", {}).get("name", ""),
-                    "posting_priority": priority,
-                    "quality_score": properties.get("Content Quality Score", {}).get("number", 5),
-                    "scheduled_time": scheduled_time_text,
-                    "scheduled_date": today,
-                    "approval_status": properties.get("Approval Status", {}).get("select", {}).get("name", "Approve"),
-                    "time_difference": time_diff,  # Track how far off we are
-                    "variations": {
-                        "a": properties.get("Variation A - News Commentary", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
-                        "b": properties.get("Variation B - Personal Experience", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
-                        "c": properties.get("Variation C - Community Discussion", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
-                    }
+                    "title": props.get("Post Title", {}).get("title", [{}])[0].get("text", {}).get("content", ""),
+                    "content": props.get("Post Content", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
+                    "priority": props.get("Posting Priority", {}).get("select", {}).get("name", "Medium"),
+                    "quality_score": props.get("Content Quality Score", {}).get("number", 5),
+                    "scheduled_time": props.get("Scheduled Time", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "14:00")
                 }
-                scheduled_posts.append(post_data)
-        
-        print(f"📊 Found {len(scheduled_posts)} posts ready for publishing")
-        
-        return {
-            "scheduled_posts": scheduled_posts,
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Found {len(scheduled_posts)} posts ready for publishing today")
-            ]
-        }
-        
-    except Exception as e:
-        print(f"❌ Failed to fetch scheduled posts: {e}")
-        return {
-            "scheduled_posts": [],
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=f"Error fetching scheduled posts: {str(e)}")
-            ]
-        }
+                # Handle X threads
+                if platform["name"] == "X":
+                    post["is_thread"] = props.get("Is Thread", {}).get("checkbox", False)
+                    # Fetch content from variations or similar? No, I'll store list in Notion or state.
+                
+                all_scheduled.append(post)
+                
+        except Exception as e:
+            print(f"⚠️ Failed to fetch {platform['name']} posts: {e}")
+
+    return {
+        "scheduled_posts": all_scheduled,
+        "messages": state.get("messages", []) + [SystemMessage(content=f"Fetched {len(all_scheduled)} total posts.")]
+    }
+
 
 def get_backup_post(state: DailyAgentState) -> DailyAgentState:
     """NEW NODE: Get backup evergreen content if no scheduled posts"""
@@ -288,79 +232,37 @@ What's one lesson you've learned recently that made you a better developer?
     }
 
 def select_todays_post(state: DailyAgentState) -> DailyAgentState:
-    """Improved post selection with more sophisticated scoring"""
-    
+    """Node: Select the top scheduled post for EACH platform for today"""
     scheduled_posts = state.get("scheduled_posts", [])
     if not scheduled_posts:
-        return {"todays_post": {}, "messages": [...]}
+        return {"todays_posts": [], "messages": state.get("messages", []) + [SystemMessage(content="No posts for today")]}
     
     current_hour = datetime.now().hour
+    winners = []
     
-    def calculate_post_score(post):
-        """Enhanced scoring algorithm"""
-        score = 0
+    # Group by platform
+    by_platform = {}
+    for post in scheduled_posts:
+        p = post.get("platform", "linkedin").lower()
+        if p not in by_platform: by_platform[p] = []
+        by_platform[p].append(post)
+
+    for platform, posts in by_platform.items():
+        # Simple scoring to pick the best one for this platform
+        scored = []
+        for p in posts:
+            score = p.get("quality_score", 5)
+            if p.get("priority") == "High": score += 5
+            scored.append((p, score))
         
-        # Priority scoring (unchanged)
-        priority = post.get("posting_priority", "Medium")
-        if priority == "High":
-            score += 15  # Increased weight
-        elif priority == "Medium":
-            score += 8
-        
-        # Quality score
-        score += post.get("quality_score", 5)
-        
-        # TIME-BASED SCORING (NEW)
-        scheduled_time = post.get("scheduled_time", "14:00")
-        try:
-            scheduled_hour = int(scheduled_time.split(":")[0])
-            time_diff = abs(current_hour - scheduled_hour)
-            
-            # Perfect timing bonus
-            if time_diff == 0:
-                score += 5
-            elif time_diff == 1:
-                score += 3
-            elif time_diff <= 2:
-                score += 1
-        except:
-            pass
-        
-        # CONTENT TYPE SCORING (NEW)
-        content_type = post.get("content_type", "")
-        type_scores = {
-            "github_project": 3,    # Your strength
-            "news_article": 2,
-            "tutorial": 4,
-            "commentary": 2
-        }
-        score += type_scores.get(content_type, 1)
-        
-        # ENGAGEMENT POTENTIAL (NEW)
-        # Check if post has engagement triggers
-        content = post.get("content", "")
-        if content.strip().endswith('?'):
-            score += 2
-        if any(trigger in content.lower() for trigger in ['what do you think', 'share your', 'drop a comment']):
-            score += 1
-        
-        return score
-    
-    # Sort posts by score
-    scored_posts = [(post, calculate_post_score(post)) for post in scheduled_posts]
-    scored_posts.sort(key=lambda x: x[1], reverse=True)
-    
-    best_post = scored_posts[0][0]
-    best_score = scored_posts[0][1]
-    
-    print(f"✅ Selected: {best_post.get('title', 'Unknown')[:50]}...")
-    print(f"📊 Score: {best_score} | Priority: {best_post.get('posting_priority')} | Quality: {best_post.get('quality_score')}/10")
-    
+        scored.sort(key=lambda x: x[1], reverse=True)
+        winner = scored[0][0]
+        winners.append(winner)
+        print(f"✅ Selected for {platform.upper()}: {winner.get('title', 'Untitled')[:40]}...")
+
     return {
-        "todays_post": best_post,
-        "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Selected best post with score {best_score}")
-        ]
+        "todays_posts": winners,
+        "messages": state.get("messages", []) + [SystemMessage(content=f"Selected {len(winners)} platform-specific winners for today.")]
     }
 
 def select_best_variation(state: DailyAgentState) -> DailyAgentState:
@@ -472,180 +374,72 @@ def upload_image_to_linkedin(image_url, access_token, user_id):
         print(f"⚠️ Image upload error: {e}")
         return None
 
-def publish_to_linkedin(state: DailyAgentState) -> DailyAgentState:
-    """Node 3: Actually publish the selected post to LinkedIn with media support"""
-    print("🚀 STEP 3: Publishing to LinkedIn...")
+def publish_all_posts(state: DailyAgentState) -> DailyAgentState:
+    """Node: Orchestrate publishing to LinkedIn and X for today's winners"""
+    import requests
+    posts = state.get("todays_posts", [])
+    if not posts: return state
     
-    todays_post = state.get("todays_post", {})
+    published_results = []
     
-    if not todays_post:
-        print("ℹ️ No post selected for publishing")
-        return {
-            "published_post": {},
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No post selected for publishing")
-            ]
-        }
-    
+    for post in posts:
+        platform = post.get("platform", "linkedin").lower()
+        if platform == "linkedin":
+            res = _publish_to_linkedin(post)
+            published_results.append(res)
+        elif platform == "x":
+            res = _publish_to_x(post)
+            published_results.append(res)
+            
+    return {
+        "published_posts": published_results,
+        "messages": state.get("messages", []) + [SystemMessage(content=f"Attempted publishing to {len(published_results)} platforms.")]
+    }
+
+def _publish_to_linkedin(post_data):
+    """Internal: Actual LinkedIn API call"""
+    print(f"🚀 Publishing to LinkedIn: {post_data.get('title')}")
     try:
         import requests
-        
-        # Get LinkedIn credentials
         access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
         user_id = os.getenv('LINKEDIN_USER_ID')
         
-        if not access_token or not user_id:
-            raise ValueError("Missing LinkedIn credentials: LINKEDIN_ACCESS_TOKEN and LINKEDIN_USER_ID required")
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "X-Restli-Protocol-Version": "2.0.0"}
         
-        post_content = todays_post.get("content", "")
-        
-        # Check for images to include
-        image_urls = []
-        
-        # Get images from various sources
-        if todays_post.get("image_url"):
-            image_urls.append(todays_post["image_url"])
-        elif todays_post.get("images", {}).get("primary_image"):
-            image_urls.append(todays_post["images"]["primary_image"])
-        elif todays_post.get("images", {}).get("readme_images"):
-            image_urls.extend(todays_post["images"]["readme_images"][:1])  # Take first image
-        
-        # Prepare LinkedIn post data
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "X-Restli-Protocol-Version": "2.0.0"
-        }
-        
-        # Base post structure
-        post_data = {
+        payload = {
             "author": f"urn:li:person:{user_id}",
             "lifecycleState": "PUBLISHED",
+            "specificContent": {
+                "com.linkedin.ugc.ShareContent": {
+                    "shareCommentary": {"text": post_data.get("content", "")},
+                    "shareMediaCategory": "NONE"
+                }
+            },
             "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
         }
         
-        # Handle media upload if images exist
-        if image_urls:
-            print(f"📸 Uploading {len(image_urls)} image(s) to LinkedIn...")
-            
-            media_assets = []
-            for img_url in image_urls[:1]:  # LinkedIn allows max 1 image per post for UGC
-                asset_urn = upload_image_to_linkedin(img_url, access_token, user_id)
-                if asset_urn:
-                    media_assets.append({
-                        "status": "READY",
-                        "description": {
-                            "text": "Project screenshot"
-                        },
-                        "media": asset_urn,
-                        "title": {
-                            "text": todays_post.get("title", "Project Update")
-                        }
-                    })
-            
-            if media_assets:
-                post_data["specificContent"] = {
-                    "com.linkedin.ugc.ShareContent": {
-                        "shareCommentary": {"text": post_content},
-                        "shareMediaCategory": "IMAGE",
-                        "media": media_assets
-                    }
-                }
-                print("✅ Post prepared with media")
-            else:
-                # Fallback to text-only if image upload failed
-                post_data["specificContent"] = {
-                    "com.linkedin.ugc.ShareContent": {
-                        "shareCommentary": {"text": post_content},
-                        "shareMediaCategory": "NONE"
-                    }
-                }
-                print("⚠️ Image upload failed, posting text-only")
-        else:
-            # Text-only post
-            post_data["specificContent"] = {
-                "com.linkedin.ugc.ShareContent": {
-                    "shareCommentary": {"text": post_content},
-                    "shareMediaCategory": "NONE"
-                }
-            }
-            print("📝 Posting text-only content")
-        
-        # Make the API call
-        url = "https://api.linkedin.com/v2/ugcPosts"
-        response = requests.post(url, headers=headers, json=post_data)
-        
-        if response.status_code == 201:
-            linkedin_response = response.json()
-            linkedin_post_id = linkedin_response.get("id", f"linkedin_post_{int(time.time())}")
-            
-            # Update Notion with published status
-            if todays_post.get("notion_page_id"):
-                try:
-                    notion = Client(auth=os.getenv("NOTION_TOKEN"))
-                    notion.pages.update(
-                        page_id=todays_post["notion_page_id"],
-                        properties={
-                            "Post Status": {"status": {"name": "Published"}},
-                            "LinkedIn Post Created": {"checkbox": True},
-                            "Published Date": {"date": {"start": datetime.now().date().isoformat()}},
-                            "Actual Publish Time": {"rich_text": [{"text": {"content": datetime.now().strftime("%H:%M")}}]},
-                            "LinkedIn Post ID": {"rich_text": [{"text": {"content": linkedin_post_id}}]}
-                        }
-                    )
-                    print("✅ Updated Notion with published status")
-                except Exception as e:
-                    print(f"⚠️ Failed to update Notion: {e}")
-            
-            published_post_data = {
-                **todays_post,
-                "linkedin_post_id": linkedin_post_id,
-                "actual_publish_time": datetime.now().isoformat(),
-                "post_content": post_content,
-                "media_included": len(image_urls) > 0,
-                "publish_status": "success"
-            }
-            
-            print("✅ Successfully posted to LinkedIn!")
-            print(f"📊 Post ID: {linkedin_post_id}")
-            print(f"📸 Media included: {'Yes' if image_urls else 'No'}")
-            
-            return {
-                "published_post": published_post_data,
-                "messages": state.get("messages", []) + [
-                    SystemMessage(content=f"Successfully published to LinkedIn: {linkedin_post_id}")
-                ]
-            }
-        
-        else:
-            error_msg = f"LinkedIn API error: {response.status_code} - {response.text}"
-            print(f"❌ {error_msg}")
-            
-            return {
-                "published_post": {
-                    **todays_post,
-                    "publish_status": "failed",
-                    "error_message": error_msg
-                },
-                "messages": state.get("messages", []) + [
-                    SystemMessage(content=f"LinkedIn publishing failed: {error_msg}")
-                ]
-            }
-            
-    except Exception as e:
-        error_msg = f"LinkedIn publishing failed: {str(e)}"
-        print(f"❌ {error_msg}")
-        
-        return {
-            "published_post": {
-                **todays_post,
-                "publish_status": "failed", 
-                "error_message": error_msg
-            },
-            "messages": state.get("messages", []) + [
-                SystemMessage(content=error_msg)
-            ]
-        }
+        res = requests.post("https://api.linkedin.com/v2/ugcPosts", headers=headers, json=payload)
+        if res.status_code == 201:
+            print("✅ LinkedIn success!")
+            return {"platform": "linkedin", "status": "success", "id": res.json().get("id")}
+        return {"platform": "linkedin", "status": "failed", "error": res.text}
+    except Exception as e: return {"platform": "linkedin", "status": "failed", "error": str(e)}
+
+def _publish_to_x(post_data):
+    """Internal: Actual X API call using Tweepy"""
+    print(f"🐦 Publishing to X: {post_data.get('title')}")
+    try:
+        import tweepy
+        client = tweepy.Client(
+            consumer_key=os.getenv("X_API_KEY"),
+            consumer_secret=os.getenv("X_API_KEY_SECRET"),
+            access_token=os.getenv("X_ACCESS_TOKEN"),
+            access_token_secret=os.getenv("X_ACCESS_TOKEN_SECRET")
+        )
+        response = client.create_tweet(text=post_data.get("content", ""))
+        print("✅ X success!")
+        return {"platform": "x", "status": "success", "id": response.data['id']}
+    except Exception as e: return {"platform": "x", "status": "failed", "error": str(e)}
 
 def track_performance(state: DailyAgentState) -> DailyAgentState:
     """Enhanced performance tracking with better initial analysis"""
@@ -814,7 +608,7 @@ daily_graph = StateGraph(DailyAgentState)
 # Add nodes
 daily_graph.add_node("fetch_scheduled", fetch_scheduled_posts_for_today)
 daily_graph.add_node("select_post", select_todays_post)
-daily_graph.add_node("publish_post", publish_to_linkedin)
+daily_graph.add_node("publish_post", publish_all_posts)
 daily_graph.add_node("track_performance", track_performance)
 daily_graph.add_node("analyze_performance", analyze_performance_and_learn)
 daily_graph.add_node("get_backup", get_backup_post)
@@ -842,8 +636,8 @@ def run_daily_publishing():
     initial_state = {
         "messages": [],
         "scheduled_posts": [],
-        "todays_post": {},
-        "published_post": {},
+        "todays_posts": [],
+        "published_posts": [],
         "performance_data": {}
     }
     

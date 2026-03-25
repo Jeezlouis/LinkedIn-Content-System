@@ -13,7 +13,7 @@ from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
 from github import Github, UnknownObjectException, RateLimitExceededException
 from repo import analyze_single_repo
-from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator, engagement_predictor, posting_timing_optimizer
+from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator, engagement_predictor, posting_timing_optimizer, x_post_writer
 import os
 import json, re
 import time
@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     github_data: List[dict] 
     analyzed_content: List[dict]
     linkedin_posts: List[dict]
+    x_posts: List[dict]
     reviewed_posts: List[dict] 
     scheduled_posts: List[dict] 
 
@@ -813,8 +814,9 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                         "url": article.get("article_url", "") if article.get("article_url", "").startswith("http") else ""
                     },
                     "Original Source URL": {
-                        "url": article.get("original_source_url", "") if article.get("original_source_url", "").startswith("http") else ""
+                        "rich_text": [{"text": {"content": article.get("original_source_url", "") if article.get("original_source_url", "").startswith("http") else ""}}]
                     },
+
                     "Source": {
                         "rich_text": [{"text": {"content": safe_text(article.get("source"))}}]
                     },
@@ -1385,8 +1387,8 @@ def post_content_strategist(state: AgentState) -> AgentState:
 
 
 def content_writer_agent(state: AgentState) -> AgentState:
-    """Agent that generates LinkedIn posts from strategic content analysis"""
-    print("✍️ STEP 9: Content Writer Agent - Generating LinkedIn posts...")
+    """Agent that generates LinkedIn, X, and Threads posts from strategic content analysis"""
+    print("✍️ STEP 9: Content Writer Agent - Generating multi-platform posts...")
     
     strategy_content = state.get("analyzed_content", [])
 
@@ -1394,12 +1396,15 @@ def content_writer_agent(state: AgentState) -> AgentState:
         print("⚠️ No strategic content available for Content Writer Agent")
         return {
             "linkedin_posts": [],
+            "x_posts": [],
+            "threads_posts": [],
             "messages": state.get("messages", []) + [
-                SystemMessage(content="No strategic content available to generate LinkedIn posts")
+                SystemMessage(content="No strategic content available to generate posts")
             ]
         }
 
     linkedin_posts = []
+    x_posts = []
     print(f"📝 Processing {len(strategy_content)} strategic content items...")
 
     for item in strategy_content:
@@ -1408,7 +1413,7 @@ def content_writer_agent(state: AgentState) -> AgentState:
             strategy_analysis = item.get("strategy_analysis", {})
             source_material = item.get("source_material", {})
             
-            # Extract strategic insights for the post
+            # Common metadata extraction
             if isinstance(strategy_analysis, dict):
                 recommended_content_type = strategy_analysis.get("recommended_content_type", "Commentary")
                 content_angle = strategy_analysis.get("content_angle", "Professional insight")
@@ -1420,102 +1425,82 @@ def content_writer_agent(state: AgentState) -> AgentState:
                 primary_topic_focus = "Technology"
                 reasoning = ""
 
-            # Determine source material text based on content type
+            source_text = ""
+            key_insights = []
             if content_type == "news_article":
                 source_text = f"Title: {source_material.get('title', '')}\nContent: {source_material.get('content', '')[:500]}..."
-                # Extract key insights from news analysis
                 relevance_data = source_material.get('relevance_analysis', {})
                 summary_data = source_material.get('summary', {})
-                key_insights = []
-                
-                if isinstance(relevance_data, dict):
-                    key_insights.extend(relevance_data.get('key_insights', []))
-                if isinstance(summary_data, dict):
-                    key_insights.extend(summary_data.get('key_points', []))
-                    
+                if isinstance(relevance_data, dict): key_insights.extend(relevance_data.get('key_insights', []))
+                if isinstance(summary_data, dict): key_insights.extend(summary_data.get('key_points', []))
             elif content_type == "github_project":
                 repo_analysis = source_material.get('analysis', {})
                 source_text = f"Project: {source_material.get('name', '')}\nDescription: {source_material.get('description', '')}"
                 if isinstance(repo_analysis, dict):
                     content_summary = repo_analysis.get('content_summary', '')
-                    if content_summary:
-                        source_text += f"\nSummary: {content_summary}"
+                    if content_summary: source_text += f"\nSummary: {content_summary}"
                     key_insights = repo_analysis.get('technical_insights', [])
-                else:
-                    key_insights = []
-            else:
-                source_text = str(source_material)
-                key_insights = []
 
-            # 1. Generate base LinkedIn post
-            print(f"🎯 Generating post for {content_type}: {source_material.get('title') or source_material.get('name', 'Unknown')[:30]}...")
-            
-            system_prompt_writer = linkedin_post_writer(
+            # 1. Generate LinkedIn post
+            print(f"🎯 Generating LinkedIn post for {content_type}: {source_material.get('title') or source_material.get('name', 'Unknown')[:30]}...")
+            system_prompt_li = linkedin_post_writer(
                 content_type=recommended_content_type,
                 source_material=source_text,
-                previous_posts="Professional but conversational software developer voice with authentic personal insights",
+                previous_posts="Professional but conversational software developer voice",
                 audience="Developers, founders, and tech enthusiasts",
                 content_angle=content_angle,
                 key_insights=key_insights[:3] if key_insights else [primary_topic_focus]
             )
-            
-            messages_writer = [
-                SystemMessage(content=system_prompt_writer),
-                HumanMessage(content=f"Write a LinkedIn post based on the strategic analysis. Focus on: {reasoning[:100]}...")
-            ]
-            
-            writer_response = llm.invoke(messages_writer)
-            clean_writer_response = re.sub(r"```(?:json)?|```", "", writer_response.content).strip()
-            base_post_data = json.loads(clean_writer_response)
+            li_response = llm.invoke([SystemMessage(content=system_prompt_li), HumanMessage(content="Write a LinkedIn post.")])
+            li_data = robust_json_parse(li_response.content)
 
-            base_post_text = base_post_data.get("post_content", "")
-
-            # 2. Generate variations of the post
-            print(f"🔄 Generating variations...")
+            # Generate variations for LinkedIn
             system_prompt_variations = post_variation_generator(
-                original_concept=base_post_text,
+                original_concept=li_data.get("post_content", ""),
                 audience="Developers, founders, and tech enthusiasts",
-                voice_sample="Professional but conversational software developer voice with authentic personal insights"
+                voice_sample="Professional but conversational"
             )
-            
-            messages_variations = [
-                SystemMessage(content=system_prompt_variations),
-                HumanMessage(content="Generate 3 variations of the LinkedIn post that maintain the strategic focus.")
-            ]
-            
-            variation_response = llm.invoke(messages_variations)
-            clean_variation_response = re.sub(r"```(?:json)?|```", "", variation_response.content).strip()
-            variations_data = json.loads(clean_variation_response)
+            variation_response = llm.invoke([SystemMessage(content=system_prompt_variations), HumanMessage(content="Generate 3 variations.")])
+            variations_data = robust_json_parse(variation_response.content)
 
-            # Store the complete result
             linkedin_posts.append({
-                "content_type": content_type,
+                "platform": "linkedin",
                 "source_title": source_material.get('title') or source_material.get('name', 'Unknown'),
-                "strategic_reasoning": reasoning,
-                "recommended_content_type": recommended_content_type,
-                "content_angle": content_angle,
-                "base_post": base_post_data,
+                "base_post": li_data,
                 "variations": variations_data,
-                "strategy_analysis": strategy_analysis,
                 "source_data": source_material
             })
-            
-            print(f"✅ Generated LinkedIn post with variations")
+
+            # 2. Generate X (Twitter) post/thread
+            print(f"🐦 Generating X post for {content_type}...")
+            system_prompt_x = x_post_writer(
+                content_type=recommended_content_type,
+                source_material=source_text,
+                audience="X Tech Community",
+                content_angle=content_angle,
+                key_insights=key_insights[:3] if key_insights else [primary_topic_focus]
+            )
+            x_response = llm.invoke([SystemMessage(content=system_prompt_x), HumanMessage(content="Write an X post/thread.")])
+            x_data = robust_json_parse(x_response.content)
+            x_posts.append({
+                "platform": "x",
+                "source_title": source_material.get('title') or source_material.get('name', 'Unknown'),
+                "post_data": x_data,
+                "source_data": source_material
+            })
 
         except Exception as e:
             print(f"❌ Content Writer Agent failed for item: {str(e)}")
-            import traceback
-            traceback.print_exc()
             continue
-
-    print(f"🎉 Content Writer Agent completed! Generated {len(linkedin_posts)} LinkedIn posts")
 
     return {
         "linkedin_posts": linkedin_posts,
+        "x_posts": x_posts,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Successfully generated {len(linkedin_posts)} LinkedIn posts with strategic variations")
+            SystemMessage(content=f"Generated {len(linkedin_posts)} LI and {len(x_posts)} X posts.")
         ]
     }
+
 
 # def save_linkedin_posts_to_notion(state: AgentState) -> AgentState:
 #     """Node: Save generated LinkedIn posts to Notion database - FIXED VERSION"""
@@ -1769,18 +1754,56 @@ def content_writer_agent(state: AgentState) -> AgentState:
 #         }
 
 def content_reviewer_agent(state: AgentState) -> AgentState:
-    """Node 13: Reviews generated posts for quality, brand alignment, and professional standards"""
-    linkedin_posts = state.get("linkedin_posts", [])
-    reviewed_posts = []
+    """Node: Reviews generated posts for multi-platform quality and brand alignment"""
+    platforms = {
+        "linkedin": state.get("linkedin_posts", []),
+        "x": state.get("x_posts", []),
+        "threads": state.get("threads_posts", [])
+    }
+    
+    reviewed_all = []
+    
+    for platform_name, posts in platforms.items():
+        if not posts: continue
+        print(f"📋 Reviewing {len(posts)} generated {platform_name} posts...")
 
-    if not linkedin_posts:
-        print("No linkein posts available for content reviewer agent")
-        return {
-            "linkedin_posts": [],
-            "messages": state.get("messages", []) + [
-                SystemMessage(content="No posts available for LinkedIn posts review")
-            ]
-        }
+        for i, post in enumerate(posts, 1):
+            try:
+                if platform_name == "linkedin":
+                    post_content = post.get("base_post", {}).get("post_content", "")
+                elif platform_name == "x":
+                    post_content = "\n---\n".join(post.get("post_data", {}).get("posts", []))
+                elif platform_name == "threads":
+                    post_content = f"{post.get('post_data', {}).get('post_content', '')}\n" + "\n".join(post.get("post_data", {}).get("thread_posts", []))
+                
+                if not post_content: continue
+                
+                system_prompt = content_reviewer(
+                    post_draft=post_content,
+                    brand_voice="Professional software developer",
+                    audience=f"{platform_name.capitalize()} Tech Community",
+                    topic=post.get("content_type", "Technology")
+                )
+                
+                response = safe_llm_call([SystemMessage(content=system_prompt), HumanMessage(content=f"Review {platform_name} post")])
+                review_data = robust_json_parse(response.content) or {"approval_status": "Approve", "quality_assessment": {"brand_alignment": {"score": 7}}}
+                
+                item = post.copy()
+                item.update({
+                    "platform": platform_name,
+                    "approval_status": review_data.get("approval_status", "Approve"),
+                    "final_quality_score": review_data.get("quality_assessment", {}).get("brand_alignment", {}).get("score", 7),
+                    "reviewed_at": datetime.now().isoformat()
+                })
+                reviewed_all.append(item)
+                print(f"✅ {platform_name.capitalize()} Review: {item['approval_status']}")
+            except Exception as e:
+                print(f"❌ Review failed: {e}")
+    return {
+        "reviewed_posts": reviewed_all,
+        "messages": state.get("messages", []) + [SystemMessage(content=f"Reviewed {len(reviewed_all)} posts.")]
+    }
+
 
     print(f"📋 Reviewing {len(linkedin_posts)} generated posts...")
 
@@ -1887,9 +1910,19 @@ def scheduling_optimizer_agent(state: AgentState) -> AgentState:
     
     scheduled_posts = []
     base_date = datetime.now().date()
+    # Maintain platform-specific counters to ensure both start today
+    platform_counters = {}
     
     for i, post in enumerate(approved_posts):
         try:
+            platform = post.get("platform", "linkedin").lower()
+            # Initialize or increment counter for this platform
+            if platform not in platform_counters:
+                platform_counters[platform] = 0
+            else:
+                platform_counters[platform] += 1
+            
+            p_index = platform_counters[platform]
             
             content_type = post.get("content_type", "General")
             source_title = post.get("source_title", "Tech Content")
@@ -1917,14 +1950,14 @@ def scheduling_optimizer_agent(state: AgentState) -> AgentState:
                 print(f"⚠️ Failed to parse timing for post {i+1}, using default schedule")
                 timing_data = {
                     "optimal_posting_time": {
-                        "recommended_datetime": f"{base_date + timedelta(days=i)} 14:00:00 UTC",
+                        "recommended_datetime": f"{base_date + timedelta(days=p_index)} 14:00:00 UTC",
                         "reasoning": "Default scheduling due to parsing error"
                     }
                 }
             
             # Extract timing recommendations
             optimal_time = timing_data.get("optimal_posting_time", {})
-            recommended_datetime = optimal_time.get("recommended_datetime", f"{base_date + timedelta(days=i)} 14:00:00 UTC")
+            recommended_datetime = optimal_time.get("recommended_datetime", f"{base_date + timedelta(days=p_index)} 14:00:00 UTC")
             timing_reasoning = optimal_time.get("reasoning", "Standard professional hours")
             
             # Parse and normalize the recommended datetime
@@ -1946,12 +1979,12 @@ def scheduling_optimizer_agent(state: AgentState) -> AgentState:
                                 continue
                         else:
                             # Default if parsing fails
-                            scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+                            scheduled_datetime = datetime.combine(base_date + timedelta(days=p_index), datetime.strptime("14:00", "%H:%M").time())
                     except:
-                        scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+                        scheduled_datetime = datetime.combine(base_date + timedelta(days=p_index), datetime.strptime("14:00", "%H:%M").time())
             except:
                 # Ultimate fallback
-                scheduled_datetime = datetime.combine(base_date + timedelta(days=i), datetime.strptime("14:00", "%H:%M").time())
+                scheduled_datetime = datetime.combine(base_date + timedelta(days=p_index), datetime.strptime("14:00", "%H:%M").time())
             
             # Create scheduled post
             scheduled_post = post.copy()
@@ -1961,10 +1994,12 @@ def scheduling_optimizer_agent(state: AgentState) -> AgentState:
                 "timing_reasoning": timing_reasoning,
                 "posting_priority": "High" if final_quality_score >= 8 else "Medium" if final_quality_score >= 6 else "Low",
                 "scheduled_at": datetime.now().isoformat(),
-                "ready_for_publishing": True
+                "ready_for_publishing": True,
+                "platform": platform
             })
             
             scheduled_posts.append(scheduled_post)
+
             
             print(f"✅ Scheduled for: {scheduled_datetime.strftime('%Y-%m-%d %H:%M UTC')} (Priority: {scheduled_post['posting_priority']})")
             
@@ -2303,9 +2338,17 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                         if variation_c:
                             properties["Variation C - Community Discussion"] = {"rich_text": [{"text": {"content": variation_c}}]}
                 
+                # Select correct database based on platform
+                platform = post.get("platform", "linkedin").lower()
+                db_id = os.getenv("X_POSTS_DATABASE_ID") if platform == "x" else database_id
+                
+                if not db_id:
+                    print(f"⚠️ No database ID for platform: {platform}, skipping...")
+                    continue
+
                 # Create the Notion page
                 notion.pages.create(
-                    parent={"database_id": database_id},
+                    parent={"database_id": db_id},
                     properties=properties
                 )
                 
