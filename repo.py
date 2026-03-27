@@ -30,7 +30,7 @@ def extract_repo_images(repo, readme_content=None):
                 readme_text = readme_content.decoded_content.decode('utf-8')
                 images['readme_images'] = extract_images_from_markdown(readme_text, repo)
             except Exception as e:
-                print(f"⚠️ Could not parse README images for {repo.name}: {e}")
+                print(f"⚠️ Could not parse README images for {repo.full_name}: {e}")
         
         # 3. Determine primary image (best representative image)
         if images['readme_images']:
@@ -48,7 +48,7 @@ def extract_repo_images(repo, readme_content=None):
             images['topics'] = []
             
     except Exception as e:
-        print(f"⚠️ Error extracting images from {repo.name}: {e}")
+        print(f"⚠️ Error extracting images from {repo.full_name}: {e}")
     
     return images
 
@@ -113,14 +113,15 @@ def analyze_single_repo(repo):
     
     try:
         # Get commits as a paginated list first, then convert to list
-        commits_paginated = repo.get_commits(since=since_date, author=repo.owner)
+        # Fetch all commits to handle organization repos where user might not be the 'owner'
+        commits_paginated = repo.get_commits(since=since_date)
         commits = list(commits_paginated)
     except Exception as e:
-        print(f"⚠️ Could not get commits for {repo.name}: {e}")
+        print(f"⚠️ Could not get commits for {repo.full_name}: {e}")
         return None
     
     if not commits:  # No recent activity
-        print(f"📭 No recent commits in {repo.name}")
+        print(f"📭 No recent commits in {repo.full_name}")
         return None
     
     # Extract commit data
@@ -145,11 +146,11 @@ def analyze_single_repo(repo):
                 'url': commit.html_url
             })
         except Exception as e:
-            print(f"⚠️ Error processing commit in {repo.name}: {e}")
+            print(f"⚠️ Error processing commit in {repo.full_name}: {e}")
             continue
     
     if not commit_data:  # No processable commits
-        print(f"❌ No processable commits in {repo.name}")
+        print(f"❌ No processable commits in {repo.full_name}")
         return None
     
     # Calculate total changes
@@ -162,14 +163,14 @@ def analyze_single_repo(repo):
     try:
         content_summary = repo.get_contents("README.md")
     except Exception as e:
-        print(f"⚠️ Could not get README for {repo.name}: {e}")
+        print(f"⚠️ Could not get README for {repo.full_name}: {e}")
     
     # Extract image URLs from repository
     image_urls = extract_repo_images(repo, content_summary)
     
     # Prepare structured repository data
     repo_analysis = {
-        'name': repo.name,
+        'name': repo.full_name,
         'description': repo.description or 'No description available',
         'content_summary': content_summary.decoded_content.decode('utf-8') if content_summary else 'No README available',
         'language': repo.language or 'Unknown',
@@ -188,5 +189,5 @@ def analyze_single_repo(repo):
         'images': image_urls  # Add image URLs
     }
     
-    print(f"✅ Analyzed {repo.name}: {len(commits)} commits, +{total_additions}/-{total_deletions} lines")
+    print(f"✅ Analyzed {repo.full_name}: {len(commits)} commits, +{total_additions}/-{total_deletions} lines")
     return repo_analysis

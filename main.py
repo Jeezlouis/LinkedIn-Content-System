@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel
 from firecrawl import FirecrawlApp, ScrapeOptions
+from newspaper import Article
 from datetime import datetime, timezone, timedelta
 from typing import List, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
@@ -170,29 +171,34 @@ def github_repo_monitor():
     priority_repos = [
         "LinkedIn-Content-System",
         "ai-resume-analyzer",
-        "Saas-app",
-        "portfolio",
-        "mini-zentry-design",
+        "Asklumen/Asklumen-Ai",
+        "MacOS_Portfolio",
+        "Easylearn",
+        # "Organization/Repository-Name"  <-- You can now add org repos here!
     ]
 
     all_analysis = []
-
     for repo_name in priority_repos:
         try:
-            repo = user.get_repo(repo_name)
+            # Handle full repo names (org/repo) or user repos
+            if "/" in repo_name:
+                repo = g.get_repo(repo_name)
+            else:
+                repo = user.get_repo(repo_name)
 
             analysis = analyze_single_repo(repo)
             if analysis:
                 analysis['priority'] = True
                 all_analysis.append(analysis)
-                print(f"Priority name '{repo_name}' analyzed")
+                print(f"Priority repo '{repo.full_name}' analyzed")
         
         except Exception as e:
             print(f"❌ Priority repo {repo_name} failed: {e}")
 
 
     try:
-        recent_repos = user.get_repos(type='owner', sort='updated')
+        # Changed type='owner' to type='all' to discover organization repos as well
+        recent_repos = user.get_repos(type='all', sort='updated')
 
         for repo in recent_repos:
             rate_limit_info = g.get_rate_limit()
@@ -210,16 +216,17 @@ def github_repo_monitor():
                 time.sleep(max(0, sleep_duration))
 
             # Then continue with repo discovery...
-            if repo.name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8:
+            # Check both name and full_name to skip already processed priority repos
+            if repo.name in priority_repos or repo.full_name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8:
                 continue
 
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=14)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=28)
             if repo.pushed_at and repo.pushed_at.replace(tzinfo=timezone.utc) > cutoff_date:
                 analysis = analyze_single_repo(repo)
                 if analysis:
                     analysis['priority'] = False
                     all_analysis.append(analysis)
-                    print(f"Discovered active repo '{repo.name}'")
+                    print(f"Discovered active repo '{repo.full_name}'")
 
     except RateLimitExceededException:
         print(f"❌ Rate limit exceeded during auto-discovery. Halting process.")
@@ -353,27 +360,11 @@ def scrape_content(state: AgentState) -> AgentState:
     
     # MULTIPLE NEWS URLS CONFIGURATION
     news_sources = [
-        {
-            "url": "https://tldr.tech/",
-            "name": "TLDR Tech",
-            "limit": 1
-        },
-        {
-            "url": "https://sdtimes.com/",
-            "name": "SDtimes", 
-            "limit": 1
-        },
-        {
-            "url": "https://news.ycombinator.com/",
-            "name": "Hacker News",
-            "limit": 1
-        }
-        # Add more sources as needed:
-        # {
-        #     "url": "https://www.theverge.com/tech",
-        #     "name": "The Verge",
-        #     "limit": 1
-        # }
+        {"url": "https://feed.infoq.com/development/", "name": "InfoQ", "limit": 1},
+        {"url": "https://dev.to/feed", "name": "Dev.to Engineering", "limit": 1},
+        {"url": "https://thenewstack.io/feed", "name": "The New Stack", "limit": 1},
+        {"url": "https://news.ycombinator.com/", "name": "Hacker News", "limit": 1},
+        {"url": "https://sdtimes.com/", "name": "SDtimes", "limit": 1}
     ]
     
     all_raw_content = []
@@ -522,6 +513,65 @@ def extract_structured_news(state: AgentState) -> AgentState:
         "extracted_articles": all_extracted_articles,
         "messages": state.get("messages", []) + [
             SystemMessage(content=f"Successfully extracted {len(all_extracted_articles)} structured articles from {len(sources_processed)} sources")
+        ]
+    }
+
+
+def enrich_articles_with_newspaper(state: AgentState) -> AgentState:
+    """NEW Node: Enrich articles with newspaper4k to get full content and top images"""
+    import time
+    
+    articles = state.get("extracted_articles", [])
+    if not articles:
+        return state
+        
+    print(f"✨ ENRICHMENT NODE: Enriching {len(articles)} articles with newspaper4k...")
+    enriched_articles = []
+    
+    for i, article in enumerate(articles, 1):
+        url = article.get("article_url")
+        if not url or not url.startswith("http"):
+            enriched_articles.append(article)
+            continue
+            
+        print(f"🔄 [{i}/{len(articles)}] Fetching deep content: {article.get('title', 'Unknown')[:50]}...")
+        try:
+            ns_article = Article(url)
+            ns_article.download()
+            ns_article.parse()
+            
+            # Update article with newspaper data
+            if ns_article.top_image:
+                article["image_url"] = ns_article.top_image
+                print(f"   📸 Found featured image: {ns_article.top_image[:50]}...")
+            
+            # Use deeper content if available
+            if len(ns_article.text) > 100:
+                article["full_content"] = ns_article.text
+                # Also update 'content' field for downstream nodes if it's too short
+                if len(article.get("content", "")) < 200:
+                    article["content"] = ns_article.text[:1500]
+                
+            if ns_article.publish_date and not article.get("publication_date"):
+                if hasattr(ns_article.publish_date, 'isoformat'):
+                    article["publication_date"] = ns_article.publish_date.isoformat()
+                
+            if ns_article.authors and (not article.get("author") or article.get("author") == "TLDR"):
+                article["author"] = ", ".join(ns_article.authors)
+
+            enriched_articles.append(article)
+            
+            # Small delay to be polite to servers
+            time.sleep(0.3)
+            
+        except Exception as e:
+            print(f"⚠️ Failed to enrich {url}: {e}")
+            enriched_articles.append(article)
+            
+    return {
+        "extracted_articles": enriched_articles,
+        "messages": state.get("messages", []) + [
+            SystemMessage(content=f"Enriched {len(enriched_articles)} articles with detailed metadata and images")
         ]
     }
 
@@ -843,6 +893,9 @@ def save_news_to_notion(state: AgentState) -> AgentState:
                     },
                     "Relevance Score": {
                         "number": int(relevance_score)
+                    },
+                    "Image URL": {
+                        "url": article.get("image_url", "") if str(article.get("image_url", "")).startswith("http") else None
                     }
                 }
                 
@@ -1152,6 +1205,9 @@ def save_repo_to_notion(state: AgentState) -> AgentState:
                     },
                     "Analysis Date": {
                         "date": {"start": datetime.now().date().isoformat()}
+                    },
+                    "Image URL": {
+                        "url": repo.get("images", {}).get("primary_image", "") if str(repo.get("images", {}).get("primary_image", "")).startswith("http") else None
                     }
                 }
 
@@ -1309,7 +1365,9 @@ def post_content_strategist(state: AgentState) -> AgentState:
                     "title": news.get("title", ""),
                     "content": news.get("content", ""),
                     "summary": news.get("summary", {}),
-                    "relevance_analysis": news.get("relevance_analysis", {})
+                    "relevance_analysis": news.get("relevance_analysis", {}),
+                    "article_url": news.get("article_url", ""),
+                    "image_url": news.get("image_url", "")
                 }
             })
             analyzed_content.append(strategic_item)
@@ -1365,7 +1423,8 @@ def post_content_strategist(state: AgentState) -> AgentState:
                     "name": github.get("name", ""),
                     "description": github.get("description", ""),
                     "analysis": github.get("analysis", {}),
-                    "repo_url": github.get("repo_url", "")
+                    "repo_url": github.get("repo_url", ""),
+                    "image_url": github.get("images", {}).get("primary_image", "")
                 }
             })
             analyzed_content.append(strategic_item)
@@ -2175,7 +2234,7 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
         # 5. HIGH PRIORITY: Source URL (always try to add)
         source_url = ""
         if isinstance(source_data, dict):
-            source_url = source_data.get("article_url") or source_data.get("repo_url", "")
+            source_url = source_data.get("article_url") or source_data.get("repo_url") or source_data.get("url", "")
         
         if source_url and source_url.startswith("http"):
             base_properties["Source URL"] = {"url": source_url}
@@ -2386,6 +2445,7 @@ graph = StateGraph(AgentState)
 # Add nodes
 graph.add_node("scraper", scrape_content)
 graph.add_node("extractor", extract_structured_news)
+graph.add_node("enricher", enrich_articles_with_newspaper)
 graph.add_node("relevance_analyst", analyze_relevance)
 graph.add_node("categorizer", categorize_articles)
 graph.add_node("summarizer", summarize_content)
@@ -2401,7 +2461,8 @@ graph.add_node("scheduled_posts_saver", save_scheduled_posts_to_notion)
 # Define the flow - FIXED VERSION
 graph.add_edge(START, "scraper")
 graph.add_edge("scraper", "extractor") 
-graph.add_edge("extractor", "relevance_analyst")
+graph.add_edge("extractor", "enricher")
+graph.add_edge("enricher", "relevance_analyst")
 graph.add_edge("relevance_analyst", "categorizer")
 graph.add_edge("categorizer", "summarizer")
 graph.add_edge("summarizer", "notion_news_saver")

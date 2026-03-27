@@ -11,9 +11,11 @@ dependencies = [
     "langchain-community>=0.3.27",
     "langchain-deepseek>=0.1.4",
     "langgraph>=0.6.5",
+    "newspaper4k>=0.9.5",
     "notion-client>=2.2.1",
     "pygithub>=2.7.0",
     "python-dotenv>=1.0.0",
     "requests>=2.32.4",
     "schedule>=1.2.2",
+    "tweepy>=4.16.0",
 ]

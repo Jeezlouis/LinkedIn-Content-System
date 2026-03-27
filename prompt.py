@@ -6,7 +6,7 @@ Just copy and paste these functions into your main file
 
 def news_relevance_score(article, user_expertise, target_audience):
     """Analyzes news article relevance for LinkedIn content creation"""
-    return f"""You are a professional content strategist for a software developer's LinkedIn presence. 
+    return f"""You are a professional content strategist for a software engineer's LinkedIn presence. 
 
 Analyze this news article and score its relevance for LinkedIn content creation:
 
@@ -49,7 +49,7 @@ Return ONLY valid JSON in this exact format:
 
 def article_categorizer(title, content, source):
     """Categorizes technology content into relevant topics"""
-    return f"""You are an expert at categorizing technology content for software developers.
+    return f"""You are an expert at categorizing technology content for software engineers.
 
 Categorize this article into relevant topics:
 
@@ -75,7 +75,7 @@ Return ONLY valid JSON in this exact format:
 
 def content_strategist(news_articles, repo_updates, past_post_metrics, days_since_last_post, recent_topics, user_skills, follower_demographics, personal_brand):
     """Makes strategic decisions about what content to create"""
-    return f"""You are a LinkedIn content strategist for a software developer. Decide what content to create today.
+    return f"""You are a LinkedIn content strategist for a software engineer. Decide what content to create today.
 
 Available Content:
 - Recent News: {news_articles}
@@ -427,8 +427,8 @@ REQUIRED OUTPUT FORMAT (return exactly this structure):
     "summary": "Brief 2-3 sentence summary",
     "publication_date": "2024-01-01",
     "author": "string",
-    "article_url": "{source_url}",
-    "image_url": "https://example.com/article-image.jpg (extract from img tags, featured images, or thumbnails in the content)",
+    "article_url": "Direct link to the specific article (very important)",
+    "image_url": "Direct link to the article's featured image or thumbnail",
     "source": "string",
     "main_topic": "Technology",
     "technologies": ["tech1", "tech2"],
@@ -465,4 +465,4 @@ Return ONLY valid JSON in this exact format:
 Requirements: Strong hook, use line breaks for readability, max 280 chars per post, include 1-2 relevant hashtags."""
 
 
-
+

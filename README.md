@@ -128,11 +128,20 @@ LINKEDIN_ACCESS_TOKEN=your_linkedin_access_token
 LINKEDIN_USER_ID=your_linkedin_user_id
 LINKEDIN_CLIENT_ID=your_linkedin_client_id
 
+# X (Twitter) API
+X_API_KEY=your_x_api_key
+X_API_KEY_SECRET=your_x_api_key_secret
+X_BEARER_TOKEN=your_x_bearer_token
+X_ACCESS_TOKEN=your_x_access_token
+X_ACCESS_TOKEN_SECRET=your_x_access_token_secret
+
 # Notion Integration
 NOTION_TOKEN=your_notion_integration_token
 NEWS_ARTICLE_DATABASE_ID=your_news_database_id
 LINKEDIN_POSTS_DATABASE_ID=your_posts_database_id
+X_POSTS_DATABASE_ID=your_x_posts_database_id
 GITHUB_DATABASE_ID=your_github_database_id
+DATABASE_ID=your_news_database_id  # Alternative for NEWS_ARTICLE_DATABASE_ID
 ```
 
 ### API Setup Instructions
@@ -144,9 +153,15 @@ GITHUB_DATABASE_ID=your_github_database_id
    - `w_member_social` (post content)
 3. Generate access token and get your user ID
 
-#### 2. Notion Setup
+#### 2. X (Twitter) API Setup
+1. Create a project at [X Developer Portal](https://developer.x.com/)
+2. Request V2 API access with `Write` permissions
+3. Generate Consumer Keys and Access Tokens
+
+#### 3. Notion Setup
 1. Create a [Notion Integration](https://www.notion.so/my-integrations)
-2. Create three databases with these properties:
+2. Create databases for: News Articles, LinkedIn Posts, X Posts, and GitHub activity.
+3. Share the databases with your integration.
 
 **News Articles Database:**
 - Title (Title)
@@ -359,7 +374,7 @@ The system tracks:
 
 ## 📈 Roadmap
 
-- [ ] **Multi-platform support** (Twitter, Medium)
+- [x] **Multi-platform support** (Twitter)
 - [ ] **Advanced analytics dashboard**
 - [ ] **A/B testing for post variations**
 - [ ] **Sentiment analysis integration**

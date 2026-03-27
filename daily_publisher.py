@@ -117,7 +117,8 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
                     "content": props.get("Post Content", {}).get("rich_text", [{}])[0].get("text", {}).get("content", ""),
                     "priority": props.get("Posting Priority", {}).get("select", {}).get("name", "Medium"),
                     "quality_score": props.get("Content Quality Score", {}).get("number", 5),
-                    "scheduled_time": props.get("Scheduled Time", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "14:00")
+                    "scheduled_time": props.get("Scheduled Time", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "14:00"),
+                    "image_url": props.get("Image URL", {}).get("url", "")
                 }
                 # Handle X threads
                 if platform["name"] == "X":
@@ -384,11 +385,13 @@ def publish_all_posts(state: DailyAgentState) -> DailyAgentState:
     
     for post in posts:
         platform = post.get("platform", "linkedin").lower()
+        dry_run = post.get("dry_run", False) or os.getenv("DRY_RUN", "false").lower() == "true"
+        
         if platform == "linkedin":
-            res = _publish_to_linkedin(post)
+            res = _publish_to_linkedin(post, dry_run=dry_run)
             published_results.append(res)
         elif platform == "x":
-            res = _publish_to_x(post)
+            res = _publish_to_x(post, dry_run=dry_run)
             published_results.append(res)
             
     return {
@@ -396,9 +399,12 @@ def publish_all_posts(state: DailyAgentState) -> DailyAgentState:
         "messages": state.get("messages", []) + [SystemMessage(content=f"Attempted publishing to {len(published_results)} platforms.")]
     }
 
-def _publish_to_linkedin(post_data):
+def _publish_to_linkedin(post_data, dry_run=False):
     """Internal: Actual LinkedIn API call"""
-    print(f"🚀 Publishing to LinkedIn: {post_data.get('title')}")
+    print(f"{'🧪 DRY RUN: ' if dry_run else '🚀 '}Publishing to LinkedIn: {post_data.get('title')}")
+    if dry_run:
+        print(f"Content: {post_data.get('content', '')[:100]}...")
+        return {"platform": "linkedin", "status": "dry_run", "id": "TEST_ID"}
     try:
         import requests
         access_token = os.getenv('LINKEDIN_ACCESS_TOKEN')
@@ -406,13 +412,34 @@ def _publish_to_linkedin(post_data):
         
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "X-Restli-Protocol-Version": "2.0.0"}
         
+        # IMAGE UPLOAD LOGIC
+        image_url = post_data.get("image_url")
+        asset_urn = None
+        if image_url and image_url.startswith("http"):
+            print(f"📸 Attempting to upload image: {image_url[:50]}...")
+            asset_urn = upload_image_to_linkedin(image_url, access_token, user_id)
+            if asset_urn:
+                print(f"✅ Image registered with URN: {asset_urn}")
+            else:
+                print("⚠️ Image upload failed, proceeding with text-only post")
+
+        # Determine URN type (person or member) based on ID format
+        # Numeric IDs are usually members in new apps, Alpha-numeric are usually persons
+        urn_type = "member" if user_id.isdigit() else "person"
+        
         payload = {
-            "author": f"urn:li:person:{user_id}",
+            "author": f"urn:li:{urn_type}:{user_id}",
             "lifecycleState": "PUBLISHED",
             "specificContent": {
                 "com.linkedin.ugc.ShareContent": {
                     "shareCommentary": {"text": post_data.get("content", "")},
-                    "shareMediaCategory": "NONE"
+                    "shareMediaCategory": "IMAGE" if asset_urn else "NONE",
+                    "media": [{
+                        "status": "READY",
+                        "description": {"text": post_data.get("title", "")},
+                        "media": asset_urn,
+                        "title": {"text": post_data.get("title", "")}
+                    }] if asset_urn else []
                 }
             },
             "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
@@ -422,12 +449,19 @@ def _publish_to_linkedin(post_data):
         if res.status_code == 201:
             print("✅ LinkedIn success!")
             return {"platform": "linkedin", "status": "success", "id": res.json().get("id")}
+        
+        print(f"❌ LinkedIn failed ({res.status_code}): {res.text}")
         return {"platform": "linkedin", "status": "failed", "error": res.text}
-    except Exception as e: return {"platform": "linkedin", "status": "failed", "error": str(e)}
+    except Exception as e: 
+        print(f"❌ LinkedIn error: {e}")
+        return {"platform": "linkedin", "status": "failed", "error": str(e)}
 
-def _publish_to_x(post_data):
+def _publish_to_x(post_data, dry_run=False):
     """Internal: Actual X API call using Tweepy"""
-    print(f"🐦 Publishing to X: {post_data.get('title')}")
+    print(f"{'🧪 DRY RUN: ' if dry_run else '🐦 '}Publishing to X: {post_data.get('title')}")
+    if dry_run:
+        print(f"Content: {post_data.get('content', '')[:100]}...")
+        return {"platform": "x", "status": "dry_run", "id": "TEST_ID"}
     try:
         import tweepy
         client = tweepy.Client(
@@ -439,7 +473,9 @@ def _publish_to_x(post_data):
         response = client.create_tweet(text=post_data.get("content", ""))
         print("✅ X success!")
         return {"platform": "x", "status": "success", "id": response.data['id']}
-    except Exception as e: return {"platform": "x", "status": "failed", "error": str(e)}
+    except Exception as e: 
+        print(f"❌ X error: {e}")
+        return {"platform": "x", "status": "failed", "error": str(e)}
 
 def track_performance(state: DailyAgentState) -> DailyAgentState:
     """Enhanced performance tracking with better initial analysis"""
