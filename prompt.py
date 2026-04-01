@@ -440,6 +440,8 @@ Return only the JSON array. No other text."""
 
 
 def x_post_writer(content_type, source_material, audience, content_angle, key_insights):
+    # STRICT 280-CHARACTER LIMIT FOR X FREE ACCOUNTS
+
     """Creates X (Twitter) posts/threads optimized for short-form technical content"""
     return f"""You are a professional X (Twitter) content creator specializing in technical threads and punchy updates.
 
@@ -448,6 +450,10 @@ Source: {content_type} - {source_material}
 Target Audience: {audience}
 Post Angle: {content_angle}
 Key Points: {key_insights}
+
+STRICT LIMIT: Each tweet must be under 280 characters.
+FORMAT: If the content is too long for one tweet, split it into 2-4 tweets using the "posts" array. Do not provide partial thoughts.
+
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -464,5 +470,38 @@ Return ONLY valid JSON in this exact format:
 
 Requirements: Strong hook, use line breaks for readability, max 280 chars per post, include 1-2 relevant hashtags."""
 
+def threads_post_writer(content_type, source_material, audience, content_angle, key_insights):
+    # STRICT 500-CHARACTER LIMIT FOR THREADS ACCOUNTS
 
+    """Creates Threads posts optimized for conversational technical content (500 char limit)"""
+    return f"""You are a professional Threads content creator specializing in conversational technical content.
+    
+    Create a highly engaging, conversational Threads post based on:
+    Source: {content_type} - {source_material}
+    Target Audience: {audience}
+    Post Angle: {content_angle}
+    Key Points: {key_insights}
 
+STRICT LIMIT: The main post MUST be under 500 characters. 
+FORMAT: Prioritize a clean ending. If you need more space, use the "thread_posts" array for follow-up thoughts.
+
+    
+    Return ONLY valid JSON in this exact format:
+    {{
+        "post_content": "Complete Threads post text (max 500 characters)",
+        "thread_posts": [
+            "optional second post if needed for a small thread",
+            "optional third post"
+        ],
+        "is_thread": true_or_false,
+        "hashtags": ["tag1", "tag2"],
+        "conversational_hook": "A friendly, community-focused opening line",
+        "engagement_potential": "High|Medium|Low"
+    }}
+    
+    Requirements: 
+    1. Conversational and friendly tone. 
+    2. Max 500 characters for the main post. 
+    3. Use line breaks for readability. 
+    4. Focus on community engagement and personal perspective.
+    5. Threads supports up to 500 chars, so you have more room than X but less than LinkedIn."""

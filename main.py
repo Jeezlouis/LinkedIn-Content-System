@@ -14,7 +14,7 @@ from langchain_community.document_loaders import NotionDBLoader
 from notion_client import Client
 from github import Github, UnknownObjectException, RateLimitExceededException
 from repo import analyze_single_repo
-from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator, engagement_predictor, posting_timing_optimizer, x_post_writer
+from prompt import news_extractor, news_summarizer, news_relevance_score, article_categorizer, repo_significance_analyzer, content_strategist, content_reviewer, linkedin_post_writer, post_variation_generator, engagement_predictor, posting_timing_optimizer, x_post_writer, threads_post_writer
 import os
 import json, re
 import time
@@ -34,6 +34,7 @@ class AgentState(TypedDict):
     analyzed_content: List[dict]
     linkedin_posts: List[dict]
     x_posts: List[dict]
+    threads_posts: List[dict]
     reviewed_posts: List[dict] 
     scheduled_posts: List[dict] 
 
@@ -172,7 +173,7 @@ def github_repo_monitor():
         "LinkedIn-Content-System",
         "ai-resume-analyzer",
         "Asklumen/Asklumen-Ai",
-        "MacOS_Portfolio",
+        "MacOS-Portfolio",
         "Easylearn",
         # "Organization/Repository-Name"  <-- You can now add org repos here!
     ]
@@ -220,7 +221,7 @@ def github_repo_monitor():
             if repo.name in priority_repos or repo.full_name in priority_repos or repo.fork or repo.archived or len(all_analysis) >= 8:
                 continue
 
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=28)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=14)
             if repo.pushed_at and repo.pushed_at.replace(tzinfo=timezone.utc) > cutoff_date:
                 analysis = analyze_single_repo(repo)
                 if analysis:
@@ -828,7 +829,7 @@ def save_news_to_notion(state: AgentState) -> AgentState:
     try:
         # Initialize Notion client
         notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        database_id = os.getenv("DATABASE_ID") or os.getenv("NEWS_ARTICLE_DATABASE_ID")
+        database_id = os.getenv("NEWS_ARTICLE_DATABASE_ID") or os.getenv("DATABASE_ID")
         
         if not database_id:
             raise ValueError("Missing DATABASE_ID in environment variables")
@@ -1125,7 +1126,7 @@ def save_repo_to_notion(state: AgentState) -> AgentState:
     try:
         # Initialize Notion client
         notion = Client(auth=os.getenv("NOTION_TOKEN"))
-        database_id = os.getenv("DATABASE_ID") or os.getenv("GITHUB_DATABASE_ID")
+        database_id = os.getenv("GITHUB_DATABASE_ID") or os.getenv("DATABASE_ID")
         
         if not database_id:
             raise ValueError("Missing DATABASE_ID in environment variables")
@@ -1464,6 +1465,7 @@ def content_writer_agent(state: AgentState) -> AgentState:
 
     linkedin_posts = []
     x_posts = []
+    threads_posts = []
     print(f"📝 Processing {len(strategy_content)} strategic content items...")
 
     for item in strategy_content:
@@ -1548,6 +1550,24 @@ def content_writer_agent(state: AgentState) -> AgentState:
                 "source_data": source_material
             })
 
+            # 3. Generate Threads post
+            print(f"🧵 Generating Threads post for {content_type}...")
+            system_prompt_threads = threads_post_writer(
+                content_type=recommended_content_type,
+                source_material=source_text,
+                audience="Threads Community",
+                content_angle=content_angle,
+                key_insights=key_insights[:3] if key_insights else [primary_topic_focus]
+            )
+            threads_response = llm.invoke([SystemMessage(content=system_prompt_threads), HumanMessage(content="Write a Threads post.")])
+            threads_data = robust_json_parse(threads_response.content)
+            threads_posts.append({
+                "platform": "threads",
+                "source_title": source_material.get('title') or source_material.get('name', 'Unknown'),
+                "post_data": threads_data,
+                "source_data": source_material
+            })
+
         except Exception as e:
             print(f"❌ Content Writer Agent failed for item: {str(e)}")
             continue
@@ -1555,8 +1575,9 @@ def content_writer_agent(state: AgentState) -> AgentState:
     return {
         "linkedin_posts": linkedin_posts,
         "x_posts": x_posts,
+        "threads_posts": threads_posts,
         "messages": state.get("messages", []) + [
-            SystemMessage(content=f"Generated {len(linkedin_posts)} LI and {len(x_posts)} X posts.")
+            SystemMessage(content=f"Generated {len(linkedin_posts)} LI, {len(x_posts)} X, and {len(threads_posts)} Threads posts.")
         ]
     }
 
@@ -2399,11 +2420,59 @@ def save_scheduled_posts_to_notion(state: AgentState) -> AgentState:
                 
                 # Select correct database based on platform
                 platform = post.get("platform", "linkedin").lower()
-                db_id = os.getenv("X_POSTS_DATABASE_ID") if platform == "x" else database_id
+                
+                # SPECIAL HANDLING FOR X AND THREADS
+                # Extract content based on platform structure
+                if platform == "x":
+                    x_data = post.get("post_data", {})
+                    if isinstance(x_data, dict) and "posts" in x_data:
+                        # Join thread posts with separator
+                        post_content = " --- ".join(x_data.get("posts", []))
+                        properties["Is Thread"] = {"checkbox": x_data.get("is_thread", False)}
+                    db_id = os.getenv("X_POSTS_DATABASE_ID")
+                elif platform == "threads":
+                    t_data = post.get("post_data", {})
+                    if isinstance(t_data, dict):
+                        main_content = t_data.get("post_content", "")
+                        thread_posts = t_data.get("thread_posts", [])
+                        if thread_posts:
+                            post_content = main_content + " --- " + " --- ".join(thread_posts)
+                            properties["Is Thread"] = {"checkbox": True}
+                        else:
+                            post_content = main_content
+                            properties["Is Thread"] = {"checkbox": False}
+                    db_id = os.getenv("THREADS_POSTS_DATABASE_ID")
+                else:
+                    db_id = database_id
+
+                # Update Post Content in properties with the platform-specific content
+                properties["Post Content"] = {
+                    "rich_text": [{"text": {"content": safe_text(post_content, max_length=1900)}}]
+                }
                 
                 if not db_id:
                     print(f"⚠️ No database ID for platform: {platform}, skipping...")
                     continue
+
+                # --- DUPLICATE CHECK ---
+                try:
+                    # Query Notion to see if same post exists
+                    existing_check = notion.databases.query(
+                        database_id=db_id,
+                        filter={
+                            "and": [
+                                {"property": "Post Title", "title": {"equals": source_title[:100]}},
+                                {"property": "Scheduled Date", "date": {"equals": scheduled_date}}
+                            ]
+                        }
+                    )
+                    
+                    if existing_check.get("results"):
+                        print(f"⏭️ Skipping existing post: {source_title[:50]}...")
+                        saved_count += 1 # Count it as "saved" for the summary
+                        continue
+                except Exception as check_error:
+                    print(f"⚠️ Warning: Duplicate check failed, proceeding anyway: {check_error}")
 
                 # Create the Notion page
                 notion.pages.create(
@@ -2498,6 +2567,8 @@ def run_weekly_content_generation():
         "github_data": [],
         "analyzed_content": [],
         "linkedin_posts": [],
+        "x_posts": [],
+        "threads_posts": [],
         "reviewed_posts": [],
         "scheduled_posts": []
     }

@@ -16,6 +16,24 @@ load_dotenv()
 
 import tweepy # For X integration
 
+def safe_truncate(text, limit):
+    """Gracefully truncate text at word boundaries or sentence endings"""
+    if len(text) <= limit:
+        return text
+        
+    # Attempt 1: Look for the last sentence ending (. ! ?) before the limit
+    for i in range(limit - 3, limit // 2, -1):
+        if text[i] in ".!?":
+            return text[:i+1]
+            
+    # Attempt 2: Look for the last space before the limit
+    for i in range(limit - 3, limit // 2, -1):
+        if text[i] == " ":
+            return text[:i].strip() + "..."
+            
+    # Attempt 3: Hard truncate (fallback)
+    return text[:limit-3].strip() + "..."
+
 class DailyAgentState(TypedDict):
     messages: List[BaseMessage]
     scheduled_posts: List[dict]
@@ -83,7 +101,8 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
     notion = Client(auth=os.getenv("NOTION_TOKEN"))
     platforms = [
         {"name": "LinkedIn", "db_id": os.getenv("LINKEDIN_POSTS_DATABASE_ID")},
-        {"name": "X", "db_id": os.getenv("X_POSTS_DATABASE_ID")}
+        {"name": "X", "db_id": os.getenv("X_POSTS_DATABASE_ID")},
+        {"name": "Threads", "db_id": os.getenv("THREADS_POSTS_DATABASE_ID")}
     ]
     
     today = datetime.now().date().isoformat()
@@ -120,8 +139,8 @@ def fetch_scheduled_posts_for_today(state: DailyAgentState) -> DailyAgentState:
                     "scheduled_time": props.get("Scheduled Time", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "14:00"),
                     "image_url": props.get("Image URL", {}).get("url", "")
                 }
-                # Handle X threads
-                if platform["name"] == "X":
+                # Handle threads for X and Threads
+                if platform["name"] in ["X", "Threads"]:
                     post["is_thread"] = props.get("Is Thread", {}).get("checkbox", False)
                     # Fetch content from variations or similar? No, I'll store list in Notion or state.
                 
@@ -393,6 +412,9 @@ def publish_all_posts(state: DailyAgentState) -> DailyAgentState:
         elif platform == "x":
             res = _publish_to_x(post, dry_run=dry_run)
             published_results.append(res)
+        elif platform == "threads":
+            res = _publish_to_threads(post, dry_run=dry_run)
+            published_results.append(res)
             
     return {
         "published_posts": published_results,
@@ -457,11 +479,21 @@ def _publish_to_linkedin(post_data, dry_run=False):
         return {"platform": "linkedin", "status": "failed", "error": str(e)}
 
 def _publish_to_x(post_data, dry_run=False):
-    """Internal: Actual X API call using Tweepy"""
-    print(f"{'🧪 DRY RUN: ' if dry_run else '🐦 '}Publishing to X: {post_data.get('title')}")
+    """Internal: Actual X API call using Tweepy, supporting threads and character limits"""
+    title = post_data.get('title', 'Untitled')
+    print(f"{'🧪 DRY RUN: ' if dry_run else '🐦 '}Publishing to X: {title}")
+    
+    content = post_data.get('content', '')
+    is_thread = post_data.get('is_thread', False)
+    
+    # Platform limit for X free accounts
+    X_LIMIT = 280
+    
     if dry_run:
-        print(f"Content: {post_data.get('content', '')[:100]}...")
+        print(f"Content length: {len(content)}")
+        print(f"Is Thread: {is_thread}")
         return {"platform": "x", "status": "dry_run", "id": "TEST_ID"}
+        
     try:
         import tweepy
         client = tweepy.Client(
@@ -470,12 +502,100 @@ def _publish_to_x(post_data, dry_run=False):
             access_token=os.getenv("X_ACCESS_TOKEN"),
             access_token_secret=os.getenv("X_ACCESS_TOKEN_SECRET")
         )
-        response = client.create_tweet(text=post_data.get("content", ""))
-        print("✅ X success!")
-        return {"platform": "x", "status": "success", "id": response.data['id']}
+        
+        # If it's a thread, we expect content to be split by " --- "
+        if is_thread and " --- " in content:
+            posts = [p.strip() for p in content.split(" --- ") if p.strip()]
+            last_tweet_id = None
+            
+            for i, tweet_text in enumerate(posts):
+                # Graceful truncate for free accounts
+                tweet_text = safe_truncate(tweet_text, X_LIMIT)
+                
+                if i == 0:
+                    response = client.create_tweet(text=tweet_text)
+                else:
+                    response = client.create_tweet(text=tweet_text, in_reply_to_tweet_id=last_tweet_id)
+                
+                last_tweet_id = response.data['id']
+                print(f"  ✅ Tweet {i+1} sent")
+            
+            print("✅ X Thread success!")
+            return {"platform": "x", "status": "success", "id": last_tweet_id}
+        else:
+            # Single tweet
+            content = safe_truncate(content, X_LIMIT)
+            response = client.create_tweet(text=content)
+            print("✅ X success!")
+            return {"platform": "x", "status": "success", "id": response.data['id']}
+            
     except Exception as e: 
         print(f"❌ X error: {e}")
         return {"platform": "x", "status": "failed", "error": str(e)}
+
+def _publish_to_threads(post_data, dry_run=False):
+    """Internal: Actual Threads API call using Meta Graph API, supporting character limits"""
+    title = post_data.get('title', 'Untitled')
+    print(f"{'🧪 DRY RUN: ' if dry_run else '🧵 '}Publishing to Threads: {title}")
+    
+    # Threads character limit
+    THREADS_LIMIT = 500
+    
+    content = safe_truncate(post_data.get("content", ""), THREADS_LIMIT)
+
+    if dry_run:
+        print(f"Content length: {len(content)}")
+        return {"platform": "threads", "status": "dry_run", "id": "TEST_ID"}
+    
+    try:
+        import requests
+        access_token = os.getenv('THREADS_ACCESS_TOKEN')
+        user_id = os.getenv('THREADS_USER_ID')
+        
+        if not access_token or not user_id:
+            print("❌ Threads missing credentials (THREADS_ACCESS_TOKEN or THREADS_USER_ID)")
+            return {"platform": "threads", "status": "failed", "error": "Missing credentials"}
+
+        # Step 1: Create a Threads Media Container
+        url = f"https://graph.threads.net/v1.0/{user_id}/threads"
+        
+        payload = {
+            "media_type": "TEXT",
+            "text": content,
+            "access_token": access_token
+        }
+        
+        # Add image if available
+        image_url = post_data.get("image_url")
+        if image_url and image_url.startswith("http"):
+            payload["media_type"] = "IMAGE"
+            payload["image_url"] = image_url
+
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            print(f"❌ Threads container creation failed: {response.text}")
+            return {"platform": "threads", "status": "failed", "error": response.text}
+            
+        creation_id = response.json().get("id")
+        
+        # Step 2: Publish the container
+        publish_url = f"https://graph.threads.net/v1.0/{user_id}/threads_publish"
+        publish_payload = {
+            "creation_id": creation_id,
+            "access_token": access_token
+        }
+        
+        publish_response = requests.post(publish_url, data=publish_payload)
+        if publish_response.status_code == 200:
+            print("✅ Threads success!")
+            return {"platform": "threads", "status": "success", "id": publish_response.json().get("id")}
+        
+        print(f"❌ Threads publish failed: {publish_response.text}")
+        return {"platform": "threads", "status": "failed", "error": publish_response.text}
+        
+    except Exception as e:
+        print(f"❌ Threads error: {e}")
+        return {"platform": "threads", "status": "failed", "error": str(e)}
 
 def track_performance(state: DailyAgentState) -> DailyAgentState:
     """Enhanced performance tracking with better initial analysis"""
